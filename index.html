@@ -333,7 +333,9 @@ async function persistTargets() {
 
 /* ---------------- domain helpers ---------------- */
 const fmtDate = d => d; // ISO yyyy-mm-dd stored everywhere
-const today = () => new Date().toISOString().slice(0, 10);
+/* local-date formatting — toISOString() would shift the day for UTC+5 (Pakistan) */
+const isoDate = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const today = () => isoDate(new Date());
 const monthOf = d => d.slice(0, 7);
 
 function fmtRs(n, compact) {
@@ -437,13 +439,21 @@ function totalXirr() {
 /* closing balance implied by the ledger alone: opening snapshot + every flow up to `date`.
    Shared by the Ledger balance column and the Snapshot screen so both always agree. */
 function ledgerBalanceAt(accountId, date) {
+  const r = ledgerBalanceInfo(accountId, date);
+  return r ? r.value : null;
+}
+/* also reports whether an opening balance was actually known — without one the
+   figure is just the net of flows, which is usually negative and meaningless */
+function ledgerBalanceInfo(accountId, date) {
   const txns = DB.txns.filter(t => t.account_id === accountId && t.date <= date)
     .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
   if (!txns.length) return null;
   const before = DB.snapshots.filter(s => s.account_id === accountId && s.date <= txns[0].date)
     .sort((a, b) => a.date < b.date ? -1 : 1);
-  const opening = before.length ? before[before.length - 1].value : 0;
-  return txns.reduce((s, t) => s + TXN_KINDS[t.kind].sign * t.amount, opening);
+  const hasOpening = before.length > 0;
+  const opening = hasOpening ? before[before.length - 1].value : 0;
+  return { value: txns.reduce((s, t) => s + TXN_KINDS[t.kind].sign * t.amount, opening),
+           hasOpening, opening, firstDate: txns[0].date };
 }
 
 /* net external flow into an account between two dates (exclusive prev, inclusive cur) */
@@ -891,7 +901,7 @@ function attachChartHovers() {
 function openLedger(id) { ledgerFilter = id; nav("Ledger"); }
 
 function setRange(preset) {
-  const now = new Date(), iso = d => d.toISOString().slice(0, 10);
+  const now = new Date(), iso = isoDate;
   if (preset === "all") { ledgerFrom = ledgerTo = ""; }
   else if (preset === "month") {
     ledgerFrom = iso(new Date(now.getFullYear(), now.getMonth(), 1)); ledgerTo = iso(now);
@@ -1191,14 +1201,18 @@ function viewSnapshot() {
     const prevV = lastD ? valueAt(a.id, lastD) : null;
     const flow = lastD ? flowsBetween(a.id, lastD, defDate) : 0;
     const existing = editing ? DB.snapshots.find(s => s.date === defDate && s.account_id === a.id) : null;
-    const ledgerBal = ledgerBalanceAt(a.id, defDate);
+    const info = ledgerBalanceInfo(a.id, defDate);
+    const ledgerBal = info && info.hasOpening ? info.value : null;   // only trustworthy with an opening
     const suggested = existing ? existing.value : (prevV != null ? prevV + flow : (ledgerBal != null ? ledgerBal : ""));
     rows += `<tr><td><span class="chip" style="background:${ACCT_TYPES[a.type].color}"></span>${esc(a.name)}</td>
       <td class="num muted">${prevV != null ? fmtRs(prevV) : "—"}</td>
       <td class="num muted">${flow ? (flow > 0 ? "+" : "−") + fmtRs(Math.abs(flow)).replace("Rs ", "") : "—"}</td>
       <td class="num">${ledgerBal != null
         ? `<span class="acct-link" title="Click to use this value" onclick="useLedgerBal('${a.id}',${ledgerBal})">${fmtRs(ledgerBal)}</span>`
-        : `<span class="muted">—</span>`}</td>
+        : info
+          ? `<span class="muted" title="No opening balance recorded before ${info.firstDate}, so this is only the net of your entries">
+               ${fmtRs(info.value)} <span class="tag">net flows only</span></span>`
+          : `<span class="muted">—</span>`}</td>
       <td style="max-width:160px"><input type="number" step="any" class="snapVal" data-acct="${a.id}"
         value="${suggested !== "" ? Math.round(suggested) : ""}" placeholder="current value"></td></tr>`;
   }
@@ -1378,7 +1392,8 @@ function parseDateCell(s) {
 }
 
 /* ---- bank statement import ---- */
-let bankRows = [], bankFileName = "";
+let bankRows = [], bankFileName = "", bankOpening = null, bankClosing = null;
+const dayBefore = iso => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() - 1); return isoDate(d); };
 function splitCsvLine(line) {
   const out = []; let cur = "", q = false;
   for (let i = 0; i < line.length; i++) {
@@ -1417,13 +1432,21 @@ function parseBankCsv(text) {
     debit: find("debit", "withdraw", "dr amount", "paid out", "outflow"),
     credit: find("credit", "deposit", "cr amount", "paid in", "inflow"),
     amount: find("amount", "transaction amount"),
+    balance: find("available balance", "running balance", "balance"),
   };
   if (ci.date < 0) ci.date = 0;
-  bankRows = [];
+  bankRows = []; bankOpening = null; bankClosing = null;
   for (let i = hi + 1; i < rows.length; i++) {
     const r = rows[i];
     const date = parseDateCell(r[ci.date]);
     if (!date) continue;
+    /* opening / closing balance lines carry no debit or credit — capture them as snapshots */
+    const desc = (ci.desc >= 0 ? r[ci.desc] : "").toLowerCase();
+    const bal = ci.balance >= 0 ? parseAmt(r[ci.balance]) : NaN;
+    if (!isNaN(bal)) {
+      if (/opening\s*balance|b\/f|brought forward/.test(desc)) { bankOpening = { date, value: bal }; continue; }
+      if (/closing\s*balance|c\/f|carried forward/.test(desc)) { bankClosing = { date, value: bal }; continue; }
+    }
     let amt = NaN, kind = "spend";
     const d = ci.debit >= 0 ? parseAmt(r[ci.debit]) : NaN;
     const c = ci.credit >= 0 ? parseAmt(r[ci.credit]) : NaN;
@@ -1470,10 +1493,27 @@ function bankPreviewHtml() {
     <td><input style="padding:4px 8px;font-size:12px" value="${esc(r.note)}" oninput="setBankNote(${i},this.value)"></td>
   </tr>`).join("");
   const allSuggestions = [...new Set([...CATS.spend, ...CATS.income, ...allCats()])].sort();
+  const snapBox = (bankOpening || bankClosing) ? `
+    <div class="card" style="margin:10px 0 0;border-color:var(--accent)">
+      <h2 style="color:var(--accent)">Balances found in this statement</h2>
+      ${bankOpening ? `<label style="display:flex;gap:8px;align-items:center;font-weight:500">
+        <input type="checkbox" id="useOpening" checked style="width:auto">
+        Save <strong>opening balance ${fmtRs(bankOpening.value)}</strong> as a snapshot dated ${dayBefore(bankOpening.date)}
+      </label>` : ""}
+      ${bankClosing ? `<label style="display:flex;gap:8px;align-items:center;font-weight:500;margin-top:6px">
+        <input type="checkbox" id="useClosing" checked style="width:auto">
+        Save <strong>closing balance ${fmtRs(bankClosing.value)}</strong> as a snapshot dated ${bankClosing.date}
+      </label>` : ""}
+      <p class="muted" style="margin-top:8px">Without the opening balance the running balance starts from zero and goes negative.
+        Keep these ticked.</p>
+    </div>` : `<p class="muted" style="margin-top:10px">No opening/closing balance line was found — add an opening
+      snapshot manually on the Snapshot tab, dated before the first entry.</p>`;
+
   return `<p class="muted" style="margin-top:10px"><strong>${bankRows.length}</strong> rows read from
     <em>${esc(bankFileName)}</em>. Debits became <strong>Withdraw</strong>, credits <strong>Add</strong> —
     change any row that was really a transfer between your own accounts (e.g. funds sent to your broker),
     and edit the note to record why.</p>
+  ${snapBox}
   <datalist id="dlBankCat">${allSuggestions.map(c => `<option value="${esc(c)}">`).join("")}</datalist>
   <div class="row" style="margin-top:10px;align-items:flex-end">
     <div style="max-width:250px"><label>Set category on all Withdraw rows</label>
@@ -1490,15 +1530,31 @@ function bankPreviewHtml() {
     <button class="btn" onclick="importBankRows()">Import these entries</button>
     <button class="btn secondary" onclick="bankRows=[];render()">Cancel</button></p>`;
 }
+async function upsertSnapshot(accountId, date, value) {
+  const existing = DB.snapshots.find(s => s.date === date && s.account_id === accountId);
+  if (existing) { existing.value = value; await persistUpdate("snapshots", existing.id, { value }); }
+  else {
+    const row = { id: uid(), date, account_id: accountId, value };
+    DB.snapshots.push(row); await persistInsert("snapshots", row);
+  }
+}
 async function importBankRows() {
   const acct = document.getElementById("bankAcct").value;
   if (!acct) return toast("Choose which account this statement belongs to");
+  let snaps = 0;
+  const oc = document.getElementById("useOpening"), cc = document.getElementById("useClosing");
+  if (bankOpening && oc && oc.checked) { await upsertSnapshot(acct, dayBefore(bankOpening.date), bankOpening.value); snaps++; }
+  if (bankClosing && cc && cc.checked) { await upsertSnapshot(acct, bankClosing.date, bankClosing.value); snaps++; }
   let added = 0, skipped = 0, dupes = 0;
+  /* Count-based duplicate check: if the statement has 3 identical rows and 2 are already
+     stored, import 1 — genuine repeat charges survive, re-uploads don't double-count. */
+  const sig = t => `${t.date}|${Math.round(t.amount * 100)}|${(t.note || "").trim()}`;
+  const have = {};
+  DB.txns.filter(t => t.account_id === acct).forEach(t => { const k = sig(t); have[k] = (have[k] || 0) + 1; });
   for (const r of bankRows) {
     if (r.kind === "skip") { skipped++; continue; }
-    const dup = DB.txns.some(t => t.account_id === acct && t.date === r.date &&
-      Math.abs(t.amount - r.amount) < 0.01 && (t.note || "") === (r.note || ""));
-    if (dup) { dupes++; continue; }
+    const k = sig(r);
+    if (have[k]) { have[k]--; dupes++; continue; }
     if (r.kind === "income" || r.kind === "spend") {
       const row = { id: uid(), account_id: acct, kind: r.kind, date: r.date, amount: r.amount,
         note: r.note || null, category: r.category || null };
@@ -1515,8 +1571,9 @@ async function importBankRows() {
     }
   }
   if (!isCloud()) localSave();
-  bankRows = [];
-  toast(`Imported ${added}${dupes ? `, ${dupes} duplicates ignored` : ""}${skipped ? `, ${skipped} skipped` : ""}`);
+  bankRows = []; bankOpening = null; bankClosing = null;
+  toast(`Imported ${added}${snaps ? `, ${snaps} balance snapshot${snaps > 1 ? "s" : ""}` : ""}` +
+    `${dupes ? `, ${dupes} duplicates ignored` : ""}${skipped ? `, ${skipped} skipped` : ""}`);
   nav("Ledger");
 }
 function parseAmountCell(s) { return parseFloat(String(s).replace(/[Rs,\s"]/gi, "")); }

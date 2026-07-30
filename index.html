@@ -1267,17 +1267,22 @@ function authHtml() {
   return `<hr style="border:none;border-top:1px solid var(--grid);margin:14px 0">
     <div class="row"><div><label>Email</label><input id="auEmail" type="email"></div>
     <div><label>Password</label><input id="auPass" type="password"></div></div>
+    <p id="auMsg" style="margin-top:10px;font-size:12.5px"></p>
     <p style="margin-top:12px"><button class="btn" onclick="signIn()">Sign in</button>
     <button class="btn secondary" onclick="signUp()">Create account</button></p>`;
 }
 function viewSignIn() {
-  return `<div class="card" style="max-width:420px;margin:40px auto"><h2>Sign in</h2>
-    <p class="muted">Cloud mode is configured — sign in to load your data.</p>
-    <div><label>Email</label><input id="auEmail" type="email"></div>
-    <div><label>Password</label><input id="auPass" type="password"></div>
-    <p style="margin-top:12px"><button class="btn" onclick="signIn()">Sign in</button>
-    <button class="btn secondary" onclick="signUp()">Create account</button>
-    <button class="btn secondary" onclick="nav('Settings')">Settings</button></p></div>`;
+  return `<div class="card" style="max-width:430px;margin:40px auto"><h2>Sign in to R3d Funds</h2>
+    <p class="muted">First time? Fill both boxes and press <strong>Create account</strong>.</p>
+    <div><label>Email</label><input id="auEmail" type="email" autocomplete="username"
+      onkeydown="if(event.key==='Enter')signIn()"></div>
+    <div><label>Password</label><input id="auPass" type="password" autocomplete="current-password"
+      onkeydown="if(event.key==='Enter')signIn()"></div>
+    <p id="auMsg" style="margin-top:10px;font-size:12.5px"></p>
+    <p style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" onclick="signIn()">Sign in</button>
+      <button class="btn secondary" onclick="signUp()">Create account</button>
+      <button class="btn secondary" onclick="nav('Settings')">Settings</button></p></div>`;
 }
 async function saveTargets() {
   const t = {};
@@ -1325,17 +1330,46 @@ function clearSupa() {
   if (!confirm("Switch back to local mode? Cloud data stays in Supabase untouched.")) return;
   delete cfg.supabaseUrl; delete cfg.supabaseKey; saveCfg(cfg); location.reload();
 }
+function authFields() {
+  const e = (document.getElementById("auEmail") || {}).value || "";
+  const p = (document.getElementById("auPass") || {}).value || "";
+  return { email: e.trim(), password: p };
+}
+function authError(msg) {
+  const box = document.getElementById("auMsg");
+  if (box) box.innerHTML = `<span style="color:var(--down);font-weight:600">${esc(msg)}</span>`;
+  else toast(msg);
+}
+function friendlyAuth(msg) {
+  const m = (msg || "").toLowerCase();
+  if (m.includes("anonymous")) return "Type your email and password in both boxes first.";
+  if (m.includes("already registered") || m.includes("already been registered"))
+    return "This email already has an account — use Sign in instead.";
+  if (m.includes("signups not allowed"))
+    return "Sign-ups are disabled in Supabase. Enable: Authentication → Sign In / Providers → Email → Allow new users to sign up.";
+  if (m.includes("invalid login")) return "Wrong email or password. If you haven't created the account yet, click Create account.";
+  if (m.includes("email not confirmed"))
+    return "Email not confirmed. In Supabase: Authentication → Sign In / Providers → Email → turn OFF 'Confirm email', then sign in again.";
+  if (m.includes("password")) return msg + " (minimum 6 characters)";
+  if (m.includes("failed to fetch")) return "Cannot reach Supabase — check the connection in Settings, or Supabase may be down.";
+  return msg;
+}
 async function signIn() {
-  const { error } = await supa.auth.signInWithPassword({
-    email: document.getElementById("auEmail").value, password: document.getElementById("auPass").value });
-  if (error) return toast(error.message);
+  const { email, password } = authFields();
+  if (!email || !password) return authError("Enter both email and password.");
+  const { error } = await supa.auth.signInWithPassword({ email, password });
+  if (error) return authError(friendlyAuth(error.message));
   location.reload();
 }
 async function signUp() {
-  const { error } = await supa.auth.signUp({
-    email: document.getElementById("auEmail").value, password: document.getElementById("auPass").value });
-  if (error) return toast(error.message);
-  toast("Account created — check email if confirmation is on, then sign in.");
+  const { email, password } = authFields();
+  if (!email || !password) return authError("Enter both email and password.");
+  if (!email.includes("@")) return authError("That doesn't look like an email address.");
+  if (password.length < 6) return authError("Password must be at least 6 characters.");
+  const { data, error } = await supa.auth.signUp({ email, password });
+  if (error) return authError(friendlyAuth(error.message));
+  if (data.session) { location.reload(); return; }   // confirm-email off → straight in
+  authError("Account created. Now click Sign in. (If it asks for confirmation, check your email.)");
 }
 async function signOut() { await supa.auth.signOut(); location.reload(); }
 function wipeLocal() {

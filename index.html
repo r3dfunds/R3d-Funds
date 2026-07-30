@@ -271,19 +271,37 @@ async function cloudInit() {
   const { data } = await supa.auth.getSession();
   supaUser = data.session ? data.session.user : null;
 }
+let cloudIssues = [];
 async function cloudLoadAll() {
+  cloudIssues = [];
   const [a, t, s, g] = await Promise.all([
     supa.from("accounts").select("*").order("created_at"),
     supa.from("transactions").select("*").order("date"),
     supa.from("snapshots").select("*").order("date"),
     supa.from("settings").select("*"),
   ]);
-  if (a.error || t.error || s.error) throw (a.error || t.error || s.error);
-  DB.accounts = a.data || [];
-  DB.txns = (t.data || []).map(r => ({ ...r, amount: Number(r.amount) }));
-  DB.snapshots = (s.data || []).map(r => ({ ...r, value: Number(r.value) }));
+  const note = (name, res) => {
+    if (res.error) cloudIssues.push(`${name}: ${res.error.message}${res.error.hint ? " — " + res.error.hint : ""}`);
+    return res.error ? [] : (res.data || []);
+  };
+  DB.accounts = note("accounts", a);
+  DB.txns = note("transactions", t).map(r => ({ ...r, amount: Number(r.amount) }));
+  DB.snapshots = note("snapshots", s).map(r => ({ ...r, value: Number(r.value) }));
   DB.targets = {};
-  (g.data || []).forEach(r => { if (r.key === "targets") DB.targets = r.value || {}; });
+  note("settings", g).forEach(r => { if (r.key === "targets") DB.targets = r.value || {}; });
+  if (cloudIssues.length) throw new Error(cloudIssues.join(" | "));
+}
+function cloudBanner() {
+  if (!cloudIssues.length) return "";
+  const missing = cloudIssues.some(m => /does not exist|schema cache|relation/i.test(m));
+  return `<div class="card" style="border-color:var(--down)">
+    <h2 style="color:var(--down)">Cloud connection problem</h2>
+    <ul class="muted" style="margin:0 0 8px 18px">${cloudIssues.map(m => `<li>${esc(m)}</li>`).join("")}</ul>
+    ${missing ? `<p class="muted">Looks like the tables are missing. In Supabase → <strong>SQL Editor</strong>,
+      run <code>schema.sql</code> again, then reload this page.</p>`
+    : `<p class="muted">Often temporary (Supabase outage or a paused project).
+      Reload in a minute; if it persists, check Supabase → Table Editor shows the 4 tables.</p>`}
+    <p><button class="btn" onclick="location.reload()">Reload</button></p></div>`;
 }
 
 /* unified writes: mutate DB then persist */
@@ -476,7 +494,7 @@ function render() {
 /* ---------------- Dashboard ---------------- */
 function viewDashboard() {
   if (!DB.accounts.length) {
-    return `<div class="card"><div class="empty">
+    return cloudBanner() + `<div class="card"><div class="empty">
       <p style="font-size:16px;font-weight:700;margin-bottom:8px">Welcome 👋</p>
       <p>Start by adding your accounts (bank, brokerage, fixed income, cash…),<br>
       then record a first snapshot of what each is worth today.</p>
@@ -1107,7 +1125,23 @@ async function delAccount(id) {
 
 /* ---------------- Import ---------------- */
 function viewImport() {
-  return `<div class="card"><h2>Import history — monthly valuations</h2>
+  const accOpts = DB.accounts.filter(a => a.active !== false)
+    .map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join("");
+  return `<div class="card"><h2>Bank statement — upload CSV <span class="sub">whole file at once</span></h2>
+    ${!DB.accounts.length ? `<p class="muted">Add the bank account first on the <strong>Accounts</strong> page.</p>` : `
+    <p class="muted">Export your statement from internet banking as <strong>CSV</strong> (or open the Excel file and
+      "Save As → CSV"), then upload it here. Columns are detected automatically — Date, Description,
+      Debit/Credit or Amount. You review every row before anything is saved.</p>
+    <div class="row" style="margin-top:10px">
+      <div style="max-width:280px"><label>This statement belongs to</label>
+        <select id="bankAcct">${accOpts}</select></div>
+      <div style="max-width:260px"><label>CSV file</label>
+        <input type="file" accept=".csv,.txt" onchange="handleBankFile(event)"></div>
+    </div>
+    ${bankPreviewHtml()}`}
+  </div>
+
+  <div class="card"><h2>Import history — monthly valuations</h2>
     <p class="muted">Paste rows from your Google Sheet as CSV: <code>date, account name, value</code> —
     one row per account per month. Dates like 2025-01-31 or 31/01/2025. Accounts are created automatically
     (you can fix their type afterwards on the Accounts page).</p>
@@ -1133,13 +1167,145 @@ function parseCsvLines(text) {
   return text.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
     .map(l => l.split(",").map(c => c.trim()));
 }
+const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
 function parseDateCell(s) {
-  s = s.trim();
-  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  s = String(s || "").trim().replace(/^["']|["']$/g, "");
+  const y4 = y => (y.length === 2 ? (Number(y) > 70 ? "19" + y : "20" + y) : y);
+  let m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})$/);          // 2026-07-01
   if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
-  m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/); // dd/mm/yyyy
-  if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})$/);            // 01/07/2026 (dd/mm/yyyy)
+  if (m) return `${y4(m[3])}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  m = s.match(/^(\d{1,2})[-\s]([A-Za-z]{3,})[-\s](\d{2,4})$/);         // 01-Jul-2026
+  if (m && MONTHS[m[2].slice(0, 3).toLowerCase()])
+    return `${y4(m[3])}-${String(MONTHS[m[2].slice(0, 3).toLowerCase()]).padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  m = s.match(/^([A-Za-z]{3,})[-\s](\d{1,2}),?[-\s](\d{2,4})$/);       // Jul 01, 2026
+  if (m && MONTHS[m[1].slice(0, 3).toLowerCase()])
+    return `${y4(m[3])}-${String(MONTHS[m[1].slice(0, 3).toLowerCase()]).padStart(2, "0")}-${m[2].padStart(2, "0")}`;
   return null;
+}
+
+/* ---- bank statement import ---- */
+let bankRows = [], bankFileName = "";
+function splitCsvLine(line) {
+  const out = []; let cur = "", q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') { if (q && line[i + 1] === '"') { cur += '"'; i++; } else q = !q; }
+    else if ((c === "," || c === "\t") && !q) { out.push(cur); cur = ""; }
+    else cur += c;
+  }
+  out.push(cur); return out.map(s => s.trim());
+}
+function parseAmt(s) {
+  if (s == null) return NaN;
+  let t = String(s).replace(/["'\s]/g, "").replace(/[A-Za-z₨]/g, "").replace(/,/g, "");
+  let neg = /^\(.*\)$/.test(t); t = t.replace(/[()]/g, "");
+  const v = parseFloat(t);
+  return isNaN(v) ? NaN : (neg ? -v : v);
+}
+function handleBankFile(ev) {
+  const f = ev.target.files[0]; if (!f) return;
+  bankFileName = f.name;
+  const rd = new FileReader();
+  rd.onload = () => { parseBankCsv(rd.result); render(); };
+  rd.readAsText(f);
+}
+function parseBankCsv(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  const rows = lines.map(splitCsvLine);
+  // header = first row containing a "date"-like cell and no parseable amount
+  let hi = rows.findIndex(r => r.some(c => /date/i.test(c)));
+  if (hi < 0) hi = 0;
+  const head = rows[hi].map(h => h.toLowerCase());
+  const find = (...keys) => head.findIndex(h => keys.some(k => h.includes(k)));
+  const ci = {
+    date: find("date", "trans date", "value date"),
+    desc: find("desc", "particular", "narration", "detail", "remark", "reference"),
+    debit: find("debit", "withdraw", "dr amount", "paid out", "outflow"),
+    credit: find("credit", "deposit", "cr amount", "paid in", "inflow"),
+    amount: find("amount", "transaction amount"),
+  };
+  if (ci.date < 0) ci.date = 0;
+  bankRows = [];
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const date = parseDateCell(r[ci.date]);
+    if (!date) continue;
+    let amt = NaN, kind = "spend";
+    const d = ci.debit >= 0 ? parseAmt(r[ci.debit]) : NaN;
+    const c = ci.credit >= 0 ? parseAmt(r[ci.credit]) : NaN;
+    if (!isNaN(d) && Math.abs(d) > 0) { amt = Math.abs(d); kind = "spend"; }
+    else if (!isNaN(c) && Math.abs(c) > 0) { amt = Math.abs(c); kind = "income"; }
+    else if (ci.amount >= 0) {
+      const a = parseAmt(r[ci.amount]);
+      if (!isNaN(a) && a !== 0) { amt = Math.abs(a); kind = a < 0 ? "spend" : "income"; }
+    }
+    if (isNaN(amt) || amt === 0) continue;
+    bankRows.push({ date, amount: amt, kind,
+      note: (ci.desc >= 0 ? r[ci.desc] : "").replace(/\s+/g, " ").slice(0, 120) });
+  }
+  bankRows.sort((a, b) => a.date < b.date ? -1 : 1);
+}
+function setBankKind(i, v) { bankRows[i].kind = v; }
+function setBankNote(i, v) { bankRows[i].note = v; }
+function bankPreviewHtml() {
+  if (!bankRows.length) return "";
+  const accs = DB.accounts.filter(a => a.active !== false);
+  const opts = i => {
+    const r = bankRows[i];
+    let o = `<option value="income" ${r.kind === "income" ? "selected" : ""}>Add (money in)</option>
+             <option value="spend" ${r.kind === "spend" ? "selected" : ""}>Withdraw (spending)</option>
+             <option value="skip" ${r.kind === "skip" ? "selected" : ""}>Skip this row</option>`;
+    accs.forEach(a => {
+      o += `<option value="xout:${a.id}" ${r.kind === "xout:" + a.id ? "selected" : ""}>Transfer → ${esc(a.name)}</option>`;
+      o += `<option value="xin:${a.id}" ${r.kind === "xin:" + a.id ? "selected" : ""}>Transfer ← ${esc(a.name)}</option>`;
+    });
+    return o;
+  };
+  const rows = bankRows.map((r, i) => `<tr>
+    <td>${r.date}</td>
+    <td class="num">${fmtRs(r.amount)}</td>
+    <td><select style="padding:4px 6px;font-size:12px" onchange="setBankKind(${i},this.value)">${opts(i)}</select></td>
+    <td><input style="padding:4px 8px;font-size:12px" value="${esc(r.note)}" oninput="setBankNote(${i},this.value)"></td>
+  </tr>`).join("");
+  return `<p class="muted" style="margin-top:10px"><strong>${bankRows.length}</strong> rows read from
+    <em>${esc(bankFileName)}</em>. Debits became <strong>Withdraw</strong>, credits <strong>Add</strong> —
+    change any row that was really a transfer between your own accounts (e.g. funds sent to your broker),
+    and edit the note to record why.</p>
+  <div style="max-height:420px;overflow:auto;margin-top:8px">
+  <table><thead><tr><th>Date</th><th class="num">Amount</th><th style="width:210px">Type</th><th>Note</th></tr></thead>
+  <tbody>${rows}</tbody></table></div>
+  <p style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn" onclick="importBankRows()">Import these entries</button>
+    <button class="btn secondary" onclick="bankRows=[];render()">Cancel</button></p>`;
+}
+async function importBankRows() {
+  const acct = document.getElementById("bankAcct").value;
+  if (!acct) return toast("Choose which account this statement belongs to");
+  let added = 0, skipped = 0, dupes = 0;
+  for (const r of bankRows) {
+    if (r.kind === "skip") { skipped++; continue; }
+    const dup = DB.txns.some(t => t.account_id === acct && t.date === r.date &&
+      Math.abs(t.amount - r.amount) < 0.01 && (t.note || "") === (r.note || ""));
+    if (dup) { dupes++; continue; }
+    if (r.kind === "income" || r.kind === "spend") {
+      const row = { id: uid(), account_id: acct, kind: r.kind, date: r.date, amount: r.amount, note: r.note || null };
+      DB.txns.push(row); await persistInsert("transactions", row); added++;
+    } else {
+      const [dir, other] = r.kind.split(":");
+      const g = uid();
+      const mine = { id: uid(), account_id: acct, kind: dir === "xout" ? "transfer_out" : "transfer_in",
+        date: r.date, amount: r.amount, note: r.note || null, group_id: g };
+      const theirs = { id: uid(), account_id: other, kind: dir === "xout" ? "transfer_in" : "transfer_out",
+        date: r.date, amount: r.amount, note: r.note || null, group_id: g };
+      DB.txns.push(mine, theirs);
+      await persistInsert("transactions", mine); await persistInsert("transactions", theirs); added++;
+    }
+  }
+  if (!isCloud()) localSave();
+  bankRows = [];
+  toast(`Imported ${added}${dupes ? `, ${dupes} duplicates ignored` : ""}${skipped ? `, ${skipped} skipped` : ""}`);
+  nav("Ledger");
 }
 function parseAmountCell(s) { return parseFloat(String(s).replace(/[Rs,\s"]/gi, "")); }
 async function findOrCreateAccount(name) {
@@ -1515,7 +1681,7 @@ function lockNow() { location.reload(); }
       await cloudInit();
       if (supaUser) await cloudLoadAll();
     } catch (e) {
-      toast("Cloud load failed: " + (e.message || e) + " — check Settings");
+      console.error("cloud load", e);
     }
     render(); return;
   }

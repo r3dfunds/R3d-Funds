@@ -434,6 +434,18 @@ function totalXirr() {
   return xirr(flows);
 }
 
+/* closing balance implied by the ledger alone: opening snapshot + every flow up to `date`.
+   Shared by the Ledger balance column and the Snapshot screen so both always agree. */
+function ledgerBalanceAt(accountId, date) {
+  const txns = DB.txns.filter(t => t.account_id === accountId && t.date <= date)
+    .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+  if (!txns.length) return null;
+  const before = DB.snapshots.filter(s => s.account_id === accountId && s.date <= txns[0].date)
+    .sort((a, b) => a.date < b.date ? -1 : 1);
+  const opening = before.length ? before[before.length - 1].value : 0;
+  return txns.reduce((s, t) => s + TXN_KINDS[t.kind].sign * t.amount, opening);
+}
+
 /* net external flow into an account between two dates (exclusive prev, inclusive cur) */
 function flowsBetween(accountId, after, upto) {
   return DB.txns
@@ -456,6 +468,29 @@ const VIEWS = ["Dashboard", "Review", "Ledger", "Snapshot", "Accounts", "Import"
 let currentView = "Dashboard";
 let ledgerFilter = null; // account id
 let ledgerSearch = "";   // free-text filter: note, amount, or date
+let ledgerLimit = 200;   // rows rendered; "Show all" raises it
+let ledgerFrom = "", ledgerTo = "";  // date-range filter
+let ledgerCat = "";                  // category filter
+
+/* suggested categories — you can also type your own, and whatever you type is remembered */
+const CATS = {
+  spend: ["Household expenses", "Education", "Medical", "Utilities", "Travel",
+          "Charity / Zakat", "Tax", "Loan given", "Family support", "Vehicle", "Other"],
+  income: ["Salary", "Business profit", "Dividend / profit received", "Rent received",
+           "Gift received", "Sale proceeds", "Loan received", "Other"],
+  transfer_out: ["Fund investment", "Fixed income deposit", "Rebalance", "Other"],
+  transfer_in: ["Investment withdrawal", "Fixed income maturity", "Rebalance", "Other"],
+};
+function catList(kind) {
+  const used = [...new Set(DB.txns.filter(t => t.kind === kind && t.category).map(t => t.category))];
+  return [...new Set([...(CATS[kind] || []), ...used])].sort();
+}
+function catDatalist(id, kind) {
+  return `<datalist id="${id}">${catList(kind).map(c => `<option value="${esc(c)}">`).join("")}</datalist>`;
+}
+function allCats() {
+  return [...new Set(DB.txns.map(t => t.category).filter(Boolean))].sort();
+}
 let reviewIdx = null;    // index into snapDates() of the period end
 let snapDateSel = null;  // snapshot form date (past date = edit mode)
 
@@ -854,6 +889,104 @@ function attachChartHovers() {
 
 /* ---------------- Ledger ---------------- */
 function openLedger(id) { ledgerFilter = id; nav("Ledger"); }
+
+function setRange(preset) {
+  const now = new Date(), iso = d => d.toISOString().slice(0, 10);
+  if (preset === "all") { ledgerFrom = ledgerTo = ""; }
+  else if (preset === "month") {
+    ledgerFrom = iso(new Date(now.getFullYear(), now.getMonth(), 1)); ledgerTo = iso(now);
+  } else if (preset === "3m") {
+    ledgerFrom = iso(new Date(now.getFullYear(), now.getMonth() - 2, 1)); ledgerTo = iso(now);
+  } else if (preset === "fy") {           // Pakistan FY: 1 July → 30 June
+    const y = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+    ledgerFrom = `${y}-07-01`; ledgerTo = `${y + 1}-06-30`;
+  }
+  render();
+}
+
+/* Added / withdrawn in the selected range, grouped by the note = "what it was for" */
+function purposeReport(txns) {
+  const inRange = ledgerFrom || ledgerTo;
+  const label = ledgerFrom && ledgerTo ? `${ledgerFrom} → ${ledgerTo}`
+    : ledgerFrom ? `since ${ledgerFrom}` : ledgerTo ? `up to ${ledgerTo}` : "all time";
+  const fy = (() => { const n = new Date(); const y = n.getMonth() >= 6 ? n.getFullYear() : n.getFullYear() - 1;
+    return `${String(y).slice(2)}-${String(y + 1).slice(2)}`; })();
+
+  const catOpts = `<option value="">All categories</option>` +
+    [...allCats(), "(uncategorised)"].map(c =>
+      `<option value="${esc(c)}" ${ledgerCat === c ? "selected" : ""}>${esc(c)}</option>`).join("");
+
+  const picker = `<div class="row" style="align-items:flex-end">
+    <div style="max-width:170px"><label>From</label>
+      <input type="date" value="${ledgerFrom}" onchange="ledgerFrom=this.value;render()"></div>
+    <div style="max-width:170px"><label>To</label>
+      <input type="date" value="${ledgerTo}" onchange="ledgerTo=this.value;render()"></div>
+    <div style="max-width:210px"><label>Category</label>
+      <select onchange="ledgerCat=this.value;render()">${catOpts}</select></div>
+    <div style="flex:0 0 auto;display:flex;gap:6px;flex-wrap:wrap">
+      <button class="btn secondary" style="padding:6px 12px" onclick="setRange('month')">This month</button>
+      <button class="btn secondary" style="padding:6px 12px" onclick="setRange('3m')">Last 3 months</button>
+      <button class="btn secondary" style="padding:6px 12px" onclick="setRange('fy')">FY ${fy}</button>
+      <button class="btn secondary" style="padding:6px 12px" onclick="setRange('all')">All time</button>
+    </div></div>
+    ${ledgerCat ? `<p style="margin-top:10px"><span class="kindpill" style="border-color:var(--accent);color:var(--accent)">
+      Category: ${esc(ledgerCat)}</span>
+      <button class="btn secondary" style="padding:2px 10px;font-size:11px;margin-left:6px"
+        onclick="ledgerCat='';render()">Clear</button></p>` : ""}`;
+
+  const sum = k => txns.filter(t => t.kind === k).reduce((s, t) => s + t.amount, 0);
+  const added = sum("income"), withdrawn = sum("spend");
+  const xin = sum("transfer_in"), xout = sum("transfer_out");
+
+  /* group by category normally; once a category is selected, group by note within it */
+  const groupKey = t => ledgerCat ? ((t.note || "(no note)").trim() || "(no note)")
+                                  : (t.category || "(uncategorised)");
+  const byPurpose = kind => {
+    const m = {};
+    txns.filter(t => t.kind === kind).forEach(t => {
+      const key = groupKey(t);
+      if (!m[key]) m[key] = { total: 0, n: 0 };
+      m[key].total += t.amount; m[key].n++;
+    });
+    return Object.entries(m).sort((a, b) => b[1].total - a[1].total);
+  };
+  const tbl = (title, list, total, cls) => {
+    if (!list.length) return `<div><h2>${title}</h2><p class="muted">Nothing in this range.</p></div>`;
+    const shown = list.slice(0, 12);
+    const rest = list.slice(12).reduce((s, [, v]) => s + v.total, 0);
+    return `<div><h2>${title} <span class="sub">${fmtRs(total)}</span></h2>
+      <table><tbody>${shown.map(([name, v]) => `<tr>
+        <td>${ledgerCat ? esc(name)
+          : `<span class="acct-link" onclick="ledgerCat='${esc(name).replace(/'/g, "\\'")}';render()">${esc(name)}</span>`}${v.n > 1 ? ` <span class="tag">×${v.n}</span>` : ""}</td>
+        <td class="num ${cls}">${fmtRs(v.total)}</td>
+        <td class="num muted" style="width:52px">${total ? Math.round(v.total / total * 100) : 0}%</td></tr>`).join("")}
+        ${rest ? `<tr><td class="muted">other ${list.length - 12} items</td>
+          <td class="num muted">${fmtRs(rest)}</td><td></td></tr>` : ""}
+      </tbody></table></div>`;
+  };
+
+  return `<div class="card"><h2>Money in &amp; out <span class="sub">${esc(label)}</span></h2>
+    ${picker}
+    <div class="grid4" style="margin-top:16px">
+      <div><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.07em">Added</div>
+        <div style="font-size:20px;font-weight:750" class="delta-up">${fmtRs(added)}</div></div>
+      <div><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.07em">Withdrawn</div>
+        <div style="font-size:20px;font-weight:750" class="delta-down">${fmtRs(withdrawn)}</div></div>
+      <div><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.07em">Net own money</div>
+        <div style="font-size:20px;font-weight:750">${fmtRs(added - withdrawn)}</div></div>
+      <div><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.07em">Transfers moved</div>
+        <div style="font-size:20px;font-weight:750">${fmtRs(Math.max(xin, xout))}</div>
+        <div class="muted" style="font-size:11px">between your own accounts</div></div>
+    </div>
+    ${inRange || txns.length ? `<div class="grid2" style="margin-top:18px">
+      ${tbl(ledgerCat ? "Added — notes" : "Added — by category", byPurpose("income"), added, "delta-up")}
+      ${tbl(ledgerCat ? "Withdrawn — notes" : "Withdrawn — by category", byPurpose("spend"), withdrawn, "delta-down")}
+    </div>
+    <p class="muted" style="margin-top:10px">${ledgerCat
+      ? "Showing notes inside this category. Clear the category to see all categories."
+      : "Click any category to drill into it — the ledger below filters too."}</p>` : ""}
+  </div>`;
+}
 function viewLedger() {
   const acctOpts = DB.accounts.filter(a => a.active !== false)
     .map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join("");
@@ -870,7 +1003,9 @@ function viewLedger() {
     </select>
     <div class="row"><div><label>Date</label><input type="date" id="txD" value="${today()}"></div>
     <div><label>Amount (Rs)</label><input type="number" id="txAmt" min="0" step="any" placeholder="50000"></div></div>
-    <label>Note (optional)</label><input id="txN" placeholder="e.g. July salary / house expense">
+    <label>Category</label><input id="txC" list="dlSpend" placeholder="e.g. Household expenses">
+    ${catDatalist("dlSpend", "spend")}${catDatalist("dlIncome", "income")}
+    <label>Note (optional)</label><input id="txN" placeholder="e.g. July salary / Ahmed school fees">
     <p style="margin-top:12px"><button class="btn" onclick="addTxn()">Add entry</button></p>
   </div>
   <div class="card"><h2>Transfer between accounts</h2>
@@ -878,6 +1013,8 @@ function viewLedger() {
     <label>To</label><select id="tfTo">${acctOpts}</select>
     <div class="row"><div><label>Date</label><input type="date" id="tfD" value="${today()}"></div>
     <div><label>Amount (Rs)</label><input type="number" id="tfAmt" min="0" step="any"></div></div>
+    <label>Category</label><input id="tfC" list="dlXfer" placeholder="e.g. Fund investment">
+    ${catDatalist("dlXfer", "transfer_out")}
     <label>Note (optional)</label><input id="tfN" placeholder="e.g. bank → fixed income deposit">
     <p style="margin-top:12px"><button class="btn" onclick="addTransfer()">Add transfer</button></p>
     <p class="muted" style="margin-top:8px">Use this for: bank → brokerage funding, fixed-income deposits/withdrawals,
@@ -889,6 +1026,9 @@ function viewLedger() {
     .map(a => `<option value="${a.id}" ${ledgerFilter === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("");
   let txns = [...DB.txns].sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
   if (ledgerFilter) txns = txns.filter(t => t.account_id === ledgerFilter);
+  if (ledgerFrom) txns = txns.filter(t => t.date >= ledgerFrom);
+  if (ledgerTo) txns = txns.filter(t => t.date <= ledgerTo);
+  if (ledgerCat) txns = txns.filter(t => (t.category || "(uncategorised)") === ledgerCat);
   if (ledgerSearch) {
     const q = ledgerSearch.toLowerCase();
     txns = txns.filter(t => (t.note || "").toLowerCase().includes(q) ||
@@ -896,25 +1036,61 @@ function viewLedger() {
       acctName(t.account_id).toLowerCase().includes(q));
   }
 
+  html += purposeReport(txns);
+
   html += `<div class="card"><h2>Ledger
     <span class="sub"><select style="width:auto;padding:4px 8px" onchange="ledgerFilter=this.value||null;render()">${filterOpts}</select>
     <input style="width:200px;padding:4px 10px;margin-left:8px;display:inline-block" placeholder="Search note, amount, date…"
       value="${esc(ledgerSearch)}" oninput="ledgerSearch=this.value;clearTimeout(window._lst);window._lst=setTimeout(render,300)"></span></h2>`;
   if (!txns.length) html += `<div class="empty">No transactions yet.</div>`;
   else {
-    html += `<table><thead><tr><th>Date</th><th>Account</th><th>Type</th><th class="num">Amount</th><th>Note</th><th></th></tr></thead><tbody>`;
-    for (const t of txns.slice(0, 200)) {
+    /* running balance — only meaningful for a single account.
+       Computed over ALL that account's entries (not the search subset) so the
+       figure stays true even while filtering, exactly like a bank statement. */
+    let balMap = null, opening = 0;
+    if (ledgerFilter) {
+      const all = DB.txns.filter(t => t.account_id === ledgerFilter)
+        .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+      if (all.length) {
+        const snapsBefore = DB.snapshots
+          .filter(s => s.account_id === ledgerFilter && s.date <= all[0].date)
+          .sort((a, b) => a.date < b.date ? -1 : 1);
+        opening = snapsBefore.length ? snapsBefore[snapsBefore.length - 1].value : 0;
+      }
+      let run = opening; balMap = {};
+      all.forEach(t => { run += TXN_KINDS[t.kind].sign * t.amount; balMap[t.id] = run; });
+    }
+
+    const inSum = txns.filter(t => TXN_KINDS[t.kind].sign > 0).reduce((s, t) => s + t.amount, 0);
+    const outSum = txns.filter(t => TXN_KINDS[t.kind].sign < 0).reduce((s, t) => s + t.amount, 0);
+    html += `<p class="muted" style="margin-bottom:8px"><strong>${txns.length}</strong> entr${txns.length === 1 ? "y" : "ies"}
+      · in ${fmtRs(inSum)} · out ${fmtRs(outSum)} · net <strong>${fmtRs(inSum - outSum)}</strong>
+      ${ledgerFilter && opening ? ` · opening ${fmtRs(opening)}` : ""}</p>`;
+
+    const shown = txns.slice(0, ledgerLimit);
+    html += `<table><thead><tr><th>Date</th><th>Account</th><th>Type</th><th class="num">Amount</th>
+      ${balMap ? `<th class="num">Balance</th>` : ""}<th>Category</th><th>Note</th><th></th></tr></thead><tbody>`;
+    for (const t of shown) {
       const k = TXN_KINDS[t.kind];
       html += `<tr><td>${t.date}</td><td>${esc(acctName(t.account_id))}</td>
         <td><span class="kindpill">${k.label.split(" — ")[0].split(" (")[0]}</span></td>
         <td class="num ${k.sign > 0 ? "delta-up" : "delta-down"}">${k.sign > 0 ? "+" : "−"}${fmtRs(t.amount).replace("Rs ", "")}</td>
+        ${balMap ? `<td class="num">${fmtRs(balMap[t.id])}</td>` : ""}
+        <td>${t.category ? `<span class="acct-link" onclick="ledgerCat='${esc(t.category).replace(/'/g, "\\'")}';render()">${esc(t.category)}</span>` : `<span class="tag">—</span>`}</td>
         <td class="muted">${esc(t.note || "")}</td>
         <td style="white-space:nowrap">
           <button class="btn secondary" style="padding:2px 8px;font-size:11px" onclick="openTxnEdit('${t.id}')">✎</button>
           <button class="btn danger" style="padding:2px 8px;font-size:11px" onclick="delTxn('${t.id}')">✕</button></td></tr>`;
     }
     html += `</tbody></table>`;
-    if (txns.length > 200) html += `<p class="muted">Showing latest 200.</p>`;
+    if (txns.length > shown.length)
+      html += `<p style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="muted">Showing ${shown.length} of ${txns.length}</span>
+        <button class="btn secondary" onclick="ledgerLimit+=200;render()">Show 200 more</button>
+        <button class="btn secondary" onclick="ledgerLimit=1e9;render()">Show all</button></p>`;
+    else if (txns.length > 200)
+      html += `<p class="muted" style="margin-top:8px">Showing all ${txns.length}.
+        <button class="btn secondary" style="padding:2px 10px;font-size:11px" onclick="ledgerLimit=200;render()">Collapse</button></p>`;
   }
   html += `</div>`;
   return html;
@@ -924,7 +1100,8 @@ async function addTxn() {
   if (!amt || amt <= 0) return toast("Enter an amount");
   const row = { id: uid(), account_id: document.getElementById("txA").value,
     kind: document.getElementById("txK").value, date: document.getElementById("txD").value,
-    amount: amt, note: document.getElementById("txN").value || null };
+    amount: amt, note: document.getElementById("txN").value || null,
+    category: (document.getElementById("txC").value || "").trim() || null };
   DB.txns.push(row); await persistInsert("transactions", row);
   toast("Added"); render();
 }
@@ -934,9 +1111,10 @@ async function addTransfer() {
   if (!amt || amt <= 0) return toast("Enter an amount");
   if (from === to) return toast("Pick two different accounts");
   const d = document.getElementById("tfD").value, n = document.getElementById("tfN").value || null;
+  const c = (document.getElementById("tfC").value || "").trim() || null;
   const g = uid();
-  const r1 = { id: uid(), account_id: from, kind: "transfer_out", date: d, amount: amt, note: n, group_id: g };
-  const r2 = { id: uid(), account_id: to, kind: "transfer_in", date: d, amount: amt, note: n, group_id: g };
+  const r1 = { id: uid(), account_id: from, kind: "transfer_out", date: d, amount: amt, note: n, category: c, group_id: g };
+  const r2 = { id: uid(), account_id: to, kind: "transfer_in", date: d, amount: amt, note: n, category: c, group_id: g };
   DB.txns.push(r1, r2);
   await persistInsert("transactions", r1); await persistInsert("transactions", r2);
   toast("Transfer added"); render();
@@ -968,6 +1146,8 @@ function openTxnEdit(id) {
     <label>Type</label><select id="edK">
       <option value="income" ${t.kind === "income" ? "selected" : ""}>Income</option>
       <option value="spend" ${t.kind === "spend" ? "selected" : ""}>Personal spending</option></select>`}
+    <label>Category</label><input id="edC" list="dlEdit" value="${esc(t.category || "")}" placeholder="e.g. Household expenses">
+    ${catDatalist("dlEdit", t.kind)}
     <label>Note</label><input id="edN" value="${esc(t.note || "")}">
     <p style="margin-top:14px;display:flex;gap:8px">
       <button class="btn" onclick="saveTxnEdit('${t.id}')">Save</button>
@@ -980,17 +1160,19 @@ async function saveTxnEdit(id) {
   const date = document.getElementById("edD").value;
   const amount = parseFloat(document.getElementById("edA").value);
   const note = document.getElementById("edN").value || null;
+  const category = (document.getElementById("edC").value || "").trim() || null;
   if (!date || !amount || amount <= 0) return toast("Enter a valid date and amount");
   const group = t.group_id ? DB.txns.filter(x => x.group_id === t.group_id) : [t];
   for (const g of group) {
-    g.date = date; g.amount = amount; g.note = note;
+    g.date = date; g.amount = amount; g.note = note; g.category = category;
     if (group.length === 1) {
       const acctEl = document.getElementById("edAcct"), kEl = document.getElementById("edK");
       if (acctEl) g.account_id = acctEl.value;
       if (kEl) g.kind = kEl.value;
     }
     await persistUpdate("transactions", g.id,
-      { date: g.date, amount: g.amount, note: g.note, account_id: g.account_id, kind: g.kind });
+      { date: g.date, amount: g.amount, note: g.note, category: g.category,
+        account_id: g.account_id, kind: g.kind });
   }
   document.getElementById("txnDlg").close();
   toast("Updated"); render();
@@ -1009,19 +1191,26 @@ function viewSnapshot() {
     const prevV = lastD ? valueAt(a.id, lastD) : null;
     const flow = lastD ? flowsBetween(a.id, lastD, defDate) : 0;
     const existing = editing ? DB.snapshots.find(s => s.date === defDate && s.account_id === a.id) : null;
-    const suggested = existing ? existing.value : (prevV != null ? prevV + flow : "");
+    const ledgerBal = ledgerBalanceAt(a.id, defDate);
+    const suggested = existing ? existing.value : (prevV != null ? prevV + flow : (ledgerBal != null ? ledgerBal : ""));
     rows += `<tr><td><span class="chip" style="background:${ACCT_TYPES[a.type].color}"></span>${esc(a.name)}</td>
       <td class="num muted">${prevV != null ? fmtRs(prevV) : "—"}</td>
       <td class="num muted">${flow ? (flow > 0 ? "+" : "−") + fmtRs(Math.abs(flow)).replace("Rs ", "") : "—"}</td>
+      <td class="num">${ledgerBal != null
+        ? `<span class="acct-link" title="Click to use this value" onclick="useLedgerBal('${a.id}',${ledgerBal})">${fmtRs(ledgerBal)}</span>`
+        : `<span class="muted">—</span>`}</td>
       <td style="max-width:160px"><input type="number" step="any" class="snapVal" data-acct="${a.id}"
         value="${suggested !== "" ? Math.round(suggested) : ""}" placeholder="current value"></td></tr>`;
   }
   return `<div class="card"><h2>${editing ? "Edit snapshot" : "Monthly snapshot"} <span class="sub">${editing ? "existing values loaded — change and re-save" : "mark everything to market"}</span></h2>
-    <p class="muted">Prefilled with last snapshot + ledger flows since. Overwrite each with the real value
-    (broker app total, fixed-income current value, bank balance). Pick a past snapshot date to edit it.</p>
+    <p class="muted">Prefilled with last snapshot + ledger flows since — for <strong>bank and cash</strong> accounts
+    that already equals the ledger closing balance, so just confirm it. For <strong>investments</strong> overwrite with
+    the real market value (broker app total, fixed-income statement); the difference becomes your measured return.
+    Click a <span class="acct-link">ledger balance</span> to copy it into the box. Pick a past date to edit that snapshot.</p>
     <div class="row" style="margin:12px 0"><div style="max-width:200px"><label>Snapshot date</label>
       <input type="date" id="snapDate" value="${defDate}" onchange="snapDateSel=this.value;render()"></div></div>
-    <table><thead><tr><th>Account</th><th class="num">Last (${lastD || "none"})</th><th class="num">Flows since</th><th>Value now</th></tr></thead>
+    <table><thead><tr><th>Account</th><th class="num">Last (${lastD || "none"})</th><th class="num">Flows since</th>
+      <th class="num">Ledger balance</th><th>Value now</th></tr></thead>
     <tbody>${rows}</tbody></table>
     <p style="margin-top:14px"><button class="btn" onclick="saveSnapshot()">Save snapshot</button></p></div>
     ${snapHistoryHtml()}`;
@@ -1041,6 +1230,10 @@ function snapHistoryHtml() {
       <td><button class="btn danger" style="padding:2px 8px;font-size:11px" onclick="delSnapshot('${d}')">✕</button></td></tr>`;
   });
   return html + `</tbody></table></div>`;
+}
+function useLedgerBal(acctId, v) {
+  const inp = document.querySelector(`.snapVal[data-acct="${acctId}"]`);
+  if (inp) { inp.value = Math.round(v); inp.focus(); }
 }
 async function saveSnapshot() {
   const date = document.getElementById("snapDate").value;
@@ -1248,6 +1441,12 @@ function parseBankCsv(text) {
 }
 function setBankKind(i, v) { bankRows[i].kind = v; }
 function setBankNote(i, v) { bankRows[i].note = v; }
+function setBankCat(i, v) { bankRows[i].category = v; }
+function bulkBankCat(kind, v) {
+  if (!v) return;
+  bankRows.forEach(r => { if (r.kind === kind) r.category = v; });
+  render();
+}
 function bankPreviewHtml() {
   if (!bankRows.length) return "";
   const accs = DB.accounts.filter(a => a.active !== false);
@@ -1266,14 +1465,26 @@ function bankPreviewHtml() {
     <td>${r.date}</td>
     <td class="num">${fmtRs(r.amount)}</td>
     <td><select style="padding:4px 6px;font-size:12px" onchange="setBankKind(${i},this.value)">${opts(i)}</select></td>
+    <td><input style="padding:4px 8px;font-size:12px;min-width:130px" list="dlBankCat"
+      value="${esc(r.category || "")}" placeholder="category" oninput="setBankCat(${i},this.value)"></td>
     <td><input style="padding:4px 8px;font-size:12px" value="${esc(r.note)}" oninput="setBankNote(${i},this.value)"></td>
   </tr>`).join("");
+  const allSuggestions = [...new Set([...CATS.spend, ...CATS.income, ...allCats()])].sort();
   return `<p class="muted" style="margin-top:10px"><strong>${bankRows.length}</strong> rows read from
     <em>${esc(bankFileName)}</em>. Debits became <strong>Withdraw</strong>, credits <strong>Add</strong> —
     change any row that was really a transfer between your own accounts (e.g. funds sent to your broker),
     and edit the note to record why.</p>
+  <datalist id="dlBankCat">${allSuggestions.map(c => `<option value="${esc(c)}">`).join("")}</datalist>
+  <div class="row" style="margin-top:10px;align-items:flex-end">
+    <div style="max-width:250px"><label>Set category on all Withdraw rows</label>
+      <input list="dlBankCat" placeholder="e.g. Household expenses"
+        onchange="bulkBankCat('spend',this.value)"></div>
+    <div style="max-width:250px"><label>Set category on all Add rows</label>
+      <input list="dlBankCat" placeholder="e.g. Salary" onchange="bulkBankCat('income',this.value)"></div>
+  </div>
   <div style="max-height:420px;overflow:auto;margin-top:8px">
-  <table><thead><tr><th>Date</th><th class="num">Amount</th><th style="width:210px">Type</th><th>Note</th></tr></thead>
+  <table><thead><tr><th>Date</th><th class="num">Amount</th><th style="width:210px">Type</th>
+    <th style="width:150px">Category</th><th>Note</th></tr></thead>
   <tbody>${rows}</tbody></table></div>
   <p style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
     <button class="btn" onclick="importBankRows()">Import these entries</button>
@@ -1289,15 +1500,16 @@ async function importBankRows() {
       Math.abs(t.amount - r.amount) < 0.01 && (t.note || "") === (r.note || ""));
     if (dup) { dupes++; continue; }
     if (r.kind === "income" || r.kind === "spend") {
-      const row = { id: uid(), account_id: acct, kind: r.kind, date: r.date, amount: r.amount, note: r.note || null };
+      const row = { id: uid(), account_id: acct, kind: r.kind, date: r.date, amount: r.amount,
+        note: r.note || null, category: r.category || null };
       DB.txns.push(row); await persistInsert("transactions", row); added++;
     } else {
       const [dir, other] = r.kind.split(":");
       const g = uid();
       const mine = { id: uid(), account_id: acct, kind: dir === "xout" ? "transfer_out" : "transfer_in",
-        date: r.date, amount: r.amount, note: r.note || null, group_id: g };
+        date: r.date, amount: r.amount, note: r.note || null, category: r.category || null, group_id: g };
       const theirs = { id: uid(), account_id: other, kind: dir === "xout" ? "transfer_in" : "transfer_out",
-        date: r.date, amount: r.amount, note: r.note || null, group_id: g };
+        date: r.date, amount: r.amount, note: r.note || null, category: r.category || null, group_id: g };
       DB.txns.push(mine, theirs);
       await persistInsert("transactions", mine); await persistInsert("transactions", theirs); added++;
     }

@@ -1251,8 +1251,11 @@ function viewSettings() {
     Project URL and anon public key here — see README.</p>
     <label>Supabase URL</label><input id="sbUrl" value="${esc(cfg.supabaseUrl || "")}" placeholder="https://xxxx.supabase.co">
     <label>Anon public key</label><input id="sbKey" value="${esc(cfg.supabaseKey || "")}" placeholder="eyJ…">
-    <p style="margin-top:12px"><button class="btn" onclick="saveSupa()">Save & reload</button>
-    ${isCloud() ? `<button class="btn secondary" onclick="clearSupa()">Switch to local mode</button>` : ""}</p>
+    <p style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn secondary" onclick="testSupa()">Test connection</button>
+      <button class="btn" onclick="saveSupa()">Save & reload</button>
+      ${isCloud() ? `<button class="btn secondary" onclick="clearSupa()">Switch to local mode</button>` : ""}</p>
+    <p id="sbTest" class="muted" style="margin-top:8px"></p>
     ${isCloud() ? authHtml() : ""}</div>
 
   <div class="card"><h2>Danger zone</h2>
@@ -1286,9 +1289,36 @@ async function saveTargets() {
   if (sum && Math.abs(sum - 100) > 0.5) return toast(`Targets sum to ${sum}% — make them total 100%`);
   DB.targets = t; await persistTargets(); toast("Targets saved");
 }
+function normalizeSupaUrl(raw) {
+  let u = (raw || "").trim().replace(/\s+/g, "");
+  if (!u) return "";
+  u = u.replace(/\/+$/, "");                 // trailing slashes
+  u = u.replace(/\/(rest|auth|storage)\/v\d.*$/i, ""); // pasted API endpoint
+  if (!/^https?:\/\//i.test(u)) u = "https://" + u;
+  return u.replace(/\/+$/, "");
+}
+async function testSupa() {
+  const url = normalizeSupaUrl(document.getElementById("sbUrl").value);
+  const key = document.getElementById("sbKey").value.trim().replace(/\s+/g, "");
+  const out = document.getElementById("sbTest");
+  if (!url || !key) { out.innerHTML = `<span style="color:var(--down)">Fill both fields first.</span>`; return; }
+  out.textContent = "Testing…";
+  try {
+    const r = await fetch(url + "/auth/v1/settings", { headers: { apikey: key } });
+    if (r.ok) out.innerHTML = `<span style="color:var(--up);font-weight:600">✓ Connected — URL and key are valid. Click “Save & reload”.</span>`;
+    else if (r.status === 401 || r.status === 403)
+      out.innerHTML = `<span style="color:var(--down)">Reached the server, but the key was rejected (${r.status}).
+        Copy the <strong>anon / public</strong> key from Project Settings → API Keys (not service_role).</span>`;
+    else out.innerHTML = `<span style="color:var(--down)">Server replied ${r.status}. Check the URL.</span>`;
+  } catch (e) {
+    out.innerHTML = `<span style="color:var(--down)">Could not reach <code>${esc(url)}</code> — “${esc(e.message)}”.<br>
+      Check the URL is exactly <code>https://YOURPROJECT.supabase.co</code> (no /rest/v1), the project isn’t paused,
+      and that Supabase isn’t having an outage.</span>`;
+  }
+}
 async function saveSupa() {
-  cfg.supabaseUrl = document.getElementById("sbUrl").value.trim();
-  cfg.supabaseKey = document.getElementById("sbKey").value.trim();
+  cfg.supabaseUrl = normalizeSupaUrl(document.getElementById("sbUrl").value);
+  cfg.supabaseKey = document.getElementById("sbKey").value.trim().replace(/\s+/g, "");
   saveCfg(cfg); location.reload();
 }
 function clearSupa() {

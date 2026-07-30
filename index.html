@@ -1,0 +1,1464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>R3d Funds — Personal Finance Tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+:root {
+  --surface-1: #fcfcfb;
+  --page: #f9f9f7;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --baseline: #c3c2b7;
+  --border: rgba(11,11,11,0.10);
+  --up: #006300;
+  --down: #d03b3b;
+  --s1: #2a78d6; /* blue  - bank */
+  --s2: #1baf7a; /* aqua  - brokerage */
+  --s3: #eda100; /* yellow- fixed income */
+  --s4: #008300; /* green - cash */
+  --s5: #4a3aa7; /* violet- business */
+  --s6: #eb6834; /* orange- property */
+  --s7: #e87ba4; /* magenta-other */
+  --seq: #2a78d6;
+  --accent: #2a78d6;
+  --card-r: 12px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255,255,255,0.10);
+    --up: #0ca30c;
+    --down: #e66767;
+    --s1: #3987e5;
+    --s2: #199e70;
+    --s3: #c98500;
+    --s4: #008300;
+    --s5: #9085e9;
+    --s6: #d95926;
+    --s7: #d55181;
+    --seq: #3987e5;
+    --accent: #3987e5;
+  }
+}
+* { box-sizing: border-box; margin: 0; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--page); color: var(--ink);
+  font-size: 14px; line-height: 1.45;
+}
+.shell { display: flex; min-height: 100vh; }
+.side {
+  width: 232px; flex-shrink: 0; background: #0e1626; color: #c7d0e4;
+  display: flex; flex-direction: column; gap: 26px; padding: 24px 14px 18px;
+  position: sticky; top: 0; height: 100vh; overflow-y: auto;
+}
+.brand { display: flex; flex-direction: column; gap: 2px; padding: 0 10px; }
+.brand-row { display: flex; align-items: center; gap: 10px; }
+.brand-mark {
+  width: 34px; height: 34px; border-radius: 9px; background: linear-gradient(135deg,#e34948,#a52322);
+  color: #fff; font-weight: 800; font-size: 14px; display: flex; align-items: center; justify-content: center;
+  letter-spacing: .02em;
+}
+.brand-name { font-size: 16px; font-weight: 750; color: #fff; letter-spacing: -0.2px; }
+.brand-sub { font-size: 10px; text-transform: uppercase; letter-spacing: .18em; color: #6b7a9c; margin: 4px 0 0 44px; }
+.side nav { display: flex; flex-direction: column; gap: 2px; }
+.navitem {
+  display: flex; align-items: center; gap: 11px; width: 100%; text-align: left;
+  background: none; border: none; color: #93a1c0; font: inherit; font-size: 13.5px;
+  padding: 10px 12px; border-radius: 9px; cursor: pointer; font-weight: 500;
+}
+.navitem:hover { background: rgba(255,255,255,.05); color: #e6ebf5; }
+.navitem.active {
+  background: rgba(42,120,214,.16); color: #fff; font-weight: 650;
+  box-shadow: inset 3px 0 0 #3987e5;
+}
+.ni-ico { width: 18px; text-align: center; opacity: .85; font-size: 14px; }
+.side-foot { margin-top: auto; padding: 0 10px; }
+.mode-pill {
+  font-size: 9.5px; letter-spacing: .14em; padding: 5px 10px; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,.14); color: #8fa0c2; display: inline-block;
+}
+.content { flex: 1; min-width: 0; }
+.topbar {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 14px;
+  padding: 30px 38px 0;
+}
+.page-title { font-size: 23px; font-weight: 750; letter-spacing: -0.4px; }
+.page-date { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+main { padding: 20px 38px 48px; max-width: 1160px; }
+@media (max-width: 860px) {
+  .shell { flex-direction: column; }
+  .side { width: 100%; height: auto; position: static; flex-direction: row; align-items: center;
+    padding: 10px 12px; gap: 12px; overflow-x: auto; }
+  .brand-sub, .side-foot { display: none; }
+  .side nav { flex-direction: row; }
+  .navitem { padding: 8px 10px; white-space: nowrap; }
+  .topbar, main { padding-left: 16px; padding-right: 16px; }
+}
+.card {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 14px; padding: 20px 22px; margin-bottom: 18px;
+  box-shadow: 0 1px 2px rgba(16,24,40,.05);
+}
+.card h2 {
+  font-size: 11px; font-weight: 700; margin-bottom: 12px;
+  text-transform: uppercase; letter-spacing: .09em; color: var(--ink-2);
+}
+.card h2 .sub { font-weight: 400; color: var(--muted); font-size: 11px; margin-left: 8px; text-transform: none; letter-spacing: 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+@media (max-width: 1100px) { .grid4 { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 760px) { .grid2, .grid3, .grid4 { grid-template-columns: 1fr; } }
+.hero-value { font-size: 31px; font-weight: 780; letter-spacing: -0.6px; font-variant-numeric: tabular-nums; }
+.hero-sub { color: var(--ink-2); margin-top: 2px; }
+.delta-up { color: var(--up); font-weight: 600; }
+.delta-down { color: var(--down); font-weight: 600; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+     color: var(--muted); font-weight: 650; padding: 8px; border-bottom: 1px solid var(--baseline); }
+td { padding: 9px 8px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+tbody tr:hover td { background: var(--page); }
+tr:last-child td { border-bottom: none; }
+td.num, th.num { text-align: right; }
+.chip { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align: -1px; }
+button.btn, .btn {
+  background: var(--accent); color: #fff; border: none; font: inherit; font-weight: 600;
+  padding: 8px 16px; border-radius: 8px; cursor: pointer;
+}
+button.btn.secondary { background: none; color: var(--ink); border: 1px solid var(--baseline); font-weight: 500; }
+button.btn.danger { background: none; color: var(--down); border: 1px solid var(--down); font-weight: 500; }
+button.btn:disabled { opacity: .5; cursor: default; }
+input, select, textarea {
+  font: inherit; color: var(--ink); background: var(--page);
+  border: 1px solid var(--baseline); border-radius: 8px; padding: 8px 10px; width: 100%;
+}
+textarea { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+label { display: block; font-size: 12px; color: var(--ink-2); margin: 10px 0 4px; font-weight: 600; }
+.row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.row > div { flex: 1; min-width: 130px; }
+.muted { color: var(--muted); font-size: 12px; }
+.empty { color: var(--muted); text-align: center; padding: 30px 10px; }
+.tooltip {
+  position: fixed; pointer-events: none; z-index: 99; display: none;
+  background: var(--ink); color: var(--surface-1); padding: 6px 10px;
+  border-radius: 8px; font-size: 12px; white-space: nowrap;
+}
+.legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--ink-2); }
+svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+.acct-link { color: var(--accent); cursor: pointer; font-weight: 600; }
+.tag { font-size: 11px; color: var(--muted); }
+dialog {
+  border: 1px solid var(--border); border-radius: 12px; padding: 20px;
+  background: var(--surface-1); color: var(--ink); max-width: 420px; width: 92%;
+}
+dialog::backdrop { background: rgba(0,0,0,.4); }
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: var(--ink); color: var(--surface-1); padding: 10px 18px;
+  border-radius: 10px; z-index: 100; display: none; font-weight: 600;
+}
+.kindpill { font-size: 11px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-row"><span class="brand-mark">R3</span><span class="brand-name">R3d Funds</span></div>
+      <span class="brand-sub">Wealth Console</span>
+    </div>
+    <nav id="nav"></nav>
+    <div class="side-foot"><span class="mode-pill" id="modePill">LOCAL</span>
+      <div style="font-size:10px;color:#4d5c7d;margin-top:8px">v2.0 · corporate</div></div>
+  </aside>
+  <div class="content">
+    <div class="topbar">
+      <div><div class="page-title" id="pageTitle">Dashboard</div>
+      <div class="page-date" id="pageDate"></div></div>
+    </div>
+    <main id="main"></main>
+  </div>
+</div>
+<div class="tooltip" id="tt"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* ============================================================
+   My Funds — personal net-worth & ledger tracker
+   Layers: ledger (transactions) + monthly snapshots -> derived
+   Storage: localStorage ("local mode") or Supabase (cloud mode)
+   ============================================================ */
+
+const ACCT_TYPES = {
+  bank:        { label: "Bank",         color: "var(--s1)" },
+  brokerage:   { label: "Stocks (PSX)", color: "var(--s2)" },
+  fixed_income:{ label: "Fixed income", color: "var(--s3)" },
+  cash:        { label: "Cash in hand", color: "var(--s4)" },
+  business:    { label: "Business",     color: "var(--s5)" },
+  property:    { label: "Property",     color: "var(--s6)" },
+  other:       { label: "Other",        color: "var(--s7)" },
+};
+const TXN_KINDS = {
+  income:       { label: "Add (deposit from outside)", sign: +1, external: true },
+  spend:        { label: "Withdraw (spending)",        sign: -1, external: true },
+  transfer_in:  { label: "Transfer in",                sign: +1, external: false },
+  transfer_out: { label: "Transfer out",               sign: -1, external: false },
+};
+
+/* ---------------- storage layer ---------------- */
+const LS_KEY = "myfunds-data-v1";
+const CFG_KEY = "myfunds-config-v1";
+
+function loadCfg() { try { return JSON.parse(localStorage.getItem(CFG_KEY)) || {}; } catch { return {}; } }
+function saveCfg(c) { localStorage.setItem(CFG_KEY, JSON.stringify(c)); }
+let cfg = loadCfg();
+
+let DB = { accounts: [], txns: [], snapshots: [], targets: {} };
+let supa = null, supaUser = null;
+let lockKey = null; // in-memory AES key while unlocked
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+
+/* ----- encryption (password lock) ----- */
+const bufToB64 = b => btoa(String.fromCharCode(...new Uint8Array(b)));
+const b64ToBuf = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+async function deriveKey(pw, saltB64) {
+  const km = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt: b64ToBuf(saltB64), iterations: 150000, hash: "SHA-256" },
+    km, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function encStr(key, str) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(str));
+  return { iv: bufToB64(iv), ct: bufToB64(ct) };
+}
+async function decStr(key, obj) {
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64ToBuf(obj.iv) }, key, b64ToBuf(obj.ct));
+  return new TextDecoder().decode(pt);
+}
+
+function localLoad() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LS_KEY)) || {};
+    if (parsed.enc) return; // encrypted — loaded at unlock instead
+    DB = Object.assign({ accounts: [], txns: [], snapshots: [], targets: {} }, parsed);
+  }
+  catch { /* corrupted -> start empty, never overwrite until next save */ }
+}
+function localSave() {
+  if (lockKey) {
+    encStr(lockKey, JSON.stringify(DB)).then(o =>
+      localStorage.setItem(LS_KEY, JSON.stringify({ enc: 1, iv: o.iv, ct: o.ct })));
+  } else localStorage.setItem(LS_KEY, JSON.stringify(DB));
+}
+
+function isCloud() { return !!(cfg.supabaseUrl && cfg.supabaseKey); }
+
+async function cloudInit() {
+  supa = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey);
+  const { data } = await supa.auth.getSession();
+  supaUser = data.session ? data.session.user : null;
+}
+async function cloudLoadAll() {
+  const [a, t, s, g] = await Promise.all([
+    supa.from("accounts").select("*").order("created_at"),
+    supa.from("transactions").select("*").order("date"),
+    supa.from("snapshots").select("*").order("date"),
+    supa.from("settings").select("*"),
+  ]);
+  if (a.error || t.error || s.error) throw (a.error || t.error || s.error);
+  DB.accounts = a.data || [];
+  DB.txns = (t.data || []).map(r => ({ ...r, amount: Number(r.amount) }));
+  DB.snapshots = (s.data || []).map(r => ({ ...r, value: Number(r.value) }));
+  DB.targets = {};
+  (g.data || []).forEach(r => { if (r.key === "targets") DB.targets = r.value || {}; });
+}
+
+/* unified writes: mutate DB then persist */
+async function persistInsert(table, row) {
+  if (isCloud() && supaUser) {
+    const { error } = await supa.from(table).insert({ ...row, user_id: supaUser.id });
+    if (error) { toast("Save failed: " + error.message); throw error; }
+  } else localSave();
+}
+async function persistDelete(table, id) {
+  if (isCloud() && supaUser) {
+    const { error } = await supa.from(table).delete().eq("id", id);
+    if (error) { toast("Delete failed: " + error.message); throw error; }
+  } else localSave();
+}
+async function persistUpdate(table, id, patch) {
+  if (isCloud() && supaUser) {
+    const { error } = await supa.from(table).update(patch).eq("id", id);
+    if (error) { toast("Save failed: " + error.message); throw error; }
+  } else localSave();
+}
+async function persistTargets() {
+  if (isCloud() && supaUser) {
+    const { error } = await supa.from("settings")
+      .upsert({ key: "targets", value: DB.targets, user_id: supaUser.id }, { onConflict: "user_id,key" });
+    if (error) toast("Save failed: " + error.message);
+  } else localSave();
+}
+
+/* ---------------- domain helpers ---------------- */
+const fmtDate = d => d; // ISO yyyy-mm-dd stored everywhere
+const today = () => new Date().toISOString().slice(0, 10);
+const monthOf = d => d.slice(0, 7);
+
+function fmtRs(n, compact) {
+  if (n == null || isNaN(n)) return "—";
+  const neg = n < 0; const a = Math.abs(n);
+  let s;
+  if (compact) {
+    if (a >= 1e7) s = (a / 1e7).toFixed(a >= 1e8 ? 0 : 1) + " cr";
+    else if (a >= 1e5) s = (a / 1e5).toFixed(a >= 1e6 ? 0 : 1) + " lac";
+    else if (a >= 1e3) s = (a / 1e3).toFixed(0) + "k";
+    else s = a.toFixed(0);
+  } else s = a.toLocaleString("en-PK", { maximumFractionDigits: 0 });
+  return (neg ? "−" : "") + "Rs " + s;
+}
+function fmtPct(x, digits = 1) {
+  if (x == null || isNaN(x) || !isFinite(x)) return "—";
+  if (Math.abs(x) < 0.0005) return "0.0%";
+  return (x >= 0 ? "+" : "−") + Math.abs(x * 100).toFixed(digits) + "%";
+}
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function acctById(id) { return DB.accounts.find(a => a.id === id); }
+function acctName(id) { const a = acctById(id); return a ? a.name : "?"; }
+
+/* snapshot dates (sorted unique) */
+function snapDates() { return [...new Set(DB.snapshots.map(s => s.date))].sort(); }
+
+/* carried-forward value of an account at a snapshot date */
+function valueAt(accountId, date) {
+  let best = null;
+  for (const s of DB.snapshots)
+    if (s.account_id === accountId && s.date <= date && (!best || s.date > best.date)) best = s;
+  return best ? best.value : null;
+}
+function latestSnapDate() { const d = snapDates(); return d.length ? d[d.length - 1] : null; }
+
+function netWorthSeries() {
+  return snapDates().map(d => ({
+    date: d,
+    value: DB.accounts.reduce((sum, a) => sum + (valueAt(a.id, d) || 0), 0),
+  }));
+}
+
+/* XIRR — bisection on annualized rate. flows: [{date, amount}] investor
+   perspective: money put IN is negative, money taken OUT + ending value positive */
+function xirr(flows) {
+  if (flows.length < 2) return null;
+  const t0 = new Date(flows[0].date).getTime();
+  const yrs = f => (new Date(f.date).getTime() - t0) / 3.15576e10;
+  const hasNeg = flows.some(f => f.amount < 0), hasPos = flows.some(f => f.amount > 0);
+  if (!hasNeg || !hasPos) return null;
+  const npv = r => flows.reduce((s, f) => s + f.amount / Math.pow(1 + r, yrs(f)), 0);
+  let lo = -0.9999, hi = 10;
+  let flo = npv(lo), fhi = npv(hi);
+  if (flo * fhi > 0) return null;
+  for (let i = 0; i < 100; i++) {
+    const mid = (lo + hi) / 2, fm = npv(mid);
+    if (Math.abs(fm) < 1e-7) return mid;
+    if (flo * fm < 0) { hi = mid; fhi = fm; } else { lo = mid; flo = fm; }
+  }
+  return (lo + hi) / 2;
+}
+
+/* per-account XIRR: all txns touching the account + ending value */
+function accountXirr(accountId) {
+  const end = latestSnapDate(); if (!end) return null;
+  const endVal = valueAt(accountId, end); if (endVal == null) return null;
+  const first = DB.snapshots.filter(s => s.account_id === accountId).sort((a, b) => a.date < b.date ? -1 : 1)[0];
+  // txns at or before the opening snapshot are already baked into its value — skip them
+  const flows = DB.txns
+    .filter(t => t.account_id === accountId && t.date <= end && (!first || t.date > first.date))
+    .map(t => ({ date: t.date, amount: -TXN_KINDS[t.kind].sign * t.amount }));
+  // opening value acts as the initial investment
+  if (first) flows.push({ date: first.date, amount: -first.value });
+  flows.push({ date: end, amount: endVal });
+  flows.sort((a, b) => a.date < b.date ? -1 : 1);
+  // merge same-date flows
+  const merged = [];
+  for (const f of flows) {
+    const last = merged[merged.length - 1];
+    if (last && last.date === f.date) last.amount += f.amount; else merged.push({ ...f });
+  }
+  return xirr(merged);
+}
+
+/* total portfolio XIRR: external flows only */
+function totalXirr() {
+  const end = latestSnapDate(); if (!end) return null;
+  const series = netWorthSeries(); if (!series.length) return null;
+  const startVal = series[0].value, startDate = series[0].date;
+  const flows = DB.txns
+    .filter(t => TXN_KINDS[t.kind].external && t.date <= end && t.date >= startDate)
+    .map(t => ({ date: t.date, amount: -TXN_KINDS[t.kind].sign * t.amount }));
+  flows.push({ date: startDate, amount: -startVal });
+  flows.push({ date: end, amount: series[series.length - 1].value });
+  flows.sort((a, b) => a.date < b.date ? -1 : 1);
+  return xirr(flows);
+}
+
+/* net external flow into an account between two dates (exclusive prev, inclusive cur) */
+function flowsBetween(accountId, after, upto) {
+  return DB.txns
+    .filter(t => t.account_id === accountId && t.date > after && t.date <= upto)
+    .reduce((s, t) => s + TXN_KINDS[t.kind].sign * t.amount, 0);
+}
+
+/* monthly spending (kind=spend) for last n months */
+function monthlySpend(n = 12) {
+  const map = {};
+  DB.txns.filter(t => t.kind === "spend").forEach(t => {
+    const m = monthOf(t.date); map[m] = (map[m] || 0) + t.amount;
+  });
+  const months = Object.keys(map).sort().slice(-n);
+  return months.map(m => ({ month: m, value: map[m] }));
+}
+
+/* ---------------- UI plumbing ---------------- */
+const VIEWS = ["Dashboard", "Review", "Ledger", "Snapshot", "Accounts", "Import", "Settings"];
+let currentView = "Dashboard";
+let ledgerFilter = null; // account id
+let ledgerSearch = "";   // free-text filter: note, amount, or date
+let reviewIdx = null;    // index into snapDates() of the period end
+let snapDateSel = null;  // snapshot form date (past date = edit mode)
+
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg; el.style.display = "block";
+  clearTimeout(el._t); el._t = setTimeout(() => el.style.display = "none", 2600);
+}
+function nav(v) { currentView = v; render(); }
+const NAV_ICONS = { Dashboard: "▦", Review: "☰", Ledger: "⇄", Snapshot: "◔", Accounts: "▤", Import: "⤓", Settings: "⚙" };
+function renderNav() {
+  document.getElementById("nav").innerHTML = VIEWS.map(v =>
+    `<button class="navitem ${v === currentView ? "active" : ""}" onclick="nav('${v}')">
+       <span class="ni-ico">${NAV_ICONS[v] || "•"}</span>${v}</button>`).join("");
+  document.getElementById("pageTitle").textContent = currentView;
+  document.getElementById("pageDate").textContent =
+    new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  document.getElementById("modePill").textContent =
+    isCloud() ? (supaUser ? "CLOUD · " + (supaUser.email || "").toUpperCase() : "CLOUD · SIGNED OUT") : "LOCAL DEVICE";
+}
+function render() {
+  renderNav();
+  const m = document.getElementById("main");
+  if (isCloud() && !supaUser && currentView !== "Settings") { m.innerHTML = viewSignIn(); return; }
+  switch (currentView) {
+    case "Dashboard": m.innerHTML = viewDashboard(); attachChartHovers(); break;
+    case "Review": m.innerHTML = viewReview(); break;
+    case "Ledger": m.innerHTML = viewLedger(); break;
+    case "Snapshot": m.innerHTML = viewSnapshot(); break;
+    case "Accounts": m.innerHTML = viewAccounts(); break;
+    case "Import": m.innerHTML = viewImport(); break;
+    case "Settings": m.innerHTML = viewSettings(); break;
+  }
+}
+
+/* ---------------- Dashboard ---------------- */
+function viewDashboard() {
+  if (!DB.accounts.length) {
+    return `<div class="card"><div class="empty">
+      <p style="font-size:16px;font-weight:700;margin-bottom:8px">Welcome 👋</p>
+      <p>Start by adding your accounts (bank, brokerage, fixed income, cash…),<br>
+      then record a first snapshot of what each is worth today.</p>
+      <p style="margin-top:14px">
+        <button class="btn" onclick="nav('Accounts')">Add accounts</button>
+        <button class="btn secondary" onclick="loadSample()">Or load sample data</button>
+      </p></div></div>`;
+  }
+  const series = netWorthSeries();
+  const last = series[series.length - 1], prev = series[series.length - 2];
+  const delta = last && prev ? last.value - prev.value : null;
+  // true investment performance last period: per-account residual (value change minus own flows),
+  // investment accounts only — bank/cash/liability residuals are unlogged flows, not earnings
+  let earned = null, unexpl = 0;
+  if (prev && last) {
+    earned = 0;
+    for (const a of DB.accounts) {
+      const pv = valueAt(a.id, prev.date) || 0, cv = valueAt(a.id, last.date) || 0;
+      const res = cv - pv - flowsBetween(a.id, prev.date, last.date);
+      if (EARN_TYPES[a.type] && pv >= 0 && cv >= 0) earned += res; else unexpl += res;
+    }
+  }
+  const txirr = totalXirr();
+  // your own money moved last period (external only — transfers between your accounts don't count)
+  let addedIn = 0, tookOut = 0;
+  if (prev && last) DB.txns.forEach(t => {
+    if (t.date > prev.date && t.date <= last.date) {
+      if (t.kind === "income") addedIn += t.amount;
+      if (t.kind === "spend") tookOut += t.amount;
+    }
+  });
+
+  let html = `<div class="grid4">
+    <div class="card">
+      <h2>Net worth <span class="sub">${last ? "as of " + last.date : ""}</span></h2>
+      <div class="hero-value">${last ? fmtRs(last.value) : "—"}</div>
+      ${delta != null ? `<div class="hero-sub"><span class="${delta >= 0 ? "delta-up" : "delta-down"}">
+        ${delta >= 0 ? "▲" : "▼"} ${fmtRs(Math.abs(delta))}</span> vs ${prev.date}</div>` : `<div class="hero-sub muted">Record a second snapshot to see change</div>`}
+    </div>
+    <div class="card">
+      <h2>You added <span class="sub">last period, net</span></h2>
+      <div class="hero-value">${prev ? fmtRs(addedIn - tookOut) : "—"}</div>
+      <div class="hero-sub muted">${prev ? `added ${fmtRs(addedIn, true)} · withdrew ${fmtRs(tookOut, true)}` : "your own money, kept separate"}</div>
+    </div>
+    <div class="card">
+      <h2>Investments earned <span class="sub">last period, your money excluded</span></h2>
+      <div class="hero-value ${earned != null ? (earned >= 0 ? "delta-up" : "delta-down") : ""}">${earned != null ? fmtRs(earned) : "—"}</div>
+      <div class="hero-sub muted">${Math.abs(unexpl) >= 1 ? `+ ${fmtRs(unexpl)} unlogged bank/cash moves — see Review` : "fully reconciled ✓"}</div>
+    </div>
+    <div class="card">
+      <h2>Overall return <span class="sub">XIRR, annualized</span></h2>
+      <div class="hero-value ${txirr != null ? (txirr >= 0 ? "delta-up" : "delta-down") : ""}">${txirr != null ? fmtPct(txirr) : "—"}</div>
+      <div class="hero-sub muted">money-weighted, external flows adjusted</div>
+    </div>
+  </div>`;
+
+  if (series.length >= 2) html += `<div class="card"><h2>Net worth over time</h2>${lineChart(series)}</div>`;
+
+  const bd = periodBreakdown();
+  if (bd.length >= 1 && bd.some(b => b.added || b.earned))
+    html += `<div class="card"><h2>Added vs earned <span class="sub">was the change your money, or performance?</span></h2>
+      ${groupedBarChart(bd)}
+      <div class="legend"><span><span class="chip" style="background:var(--s1)"></span>You added (net)</span>
+      <span><span class="chip" style="background:var(--s2)"></span>Investments earned</span></div></div>`;
+
+  /* allocation + accounts table */
+  const lastDate = latestSnapDate();
+  const alloc = {};
+  DB.accounts.forEach(a => {
+    const v = lastDate ? valueAt(a.id, lastDate) : null;
+    if (v && v > 0) alloc[a.type] = (alloc[a.type] || 0) + v; // liabilities stay out of the donut
+  });
+  const total = Object.values(alloc).reduce((a, b) => a + b, 0);
+
+  html += `<div class="grid2">`;
+  if (total > 0) {
+    html += `<div class="card"><h2>Allocation</h2>${donutChart(alloc, total)}
+      ${targetDriftHtml(alloc, total)}</div>`;
+  }
+  const spend = monthlySpend();
+  html += `<div class="card"><h2>Withdrawals <span class="sub">monthly spending</span></h2>
+    ${spend.length ? barChart(spend) : `<div class="empty">Record “Withdraw” entries in the Ledger<br>to see your monthly burn rate.</div>`}</div>`;
+  html += `</div>`;
+
+  /* per-account table */
+  html += `<div class="card"><h2>Accounts</h2><table><thead><tr>
+    <th>Account</th><th>Type</th><th class="num">Value</th><th class="num">1-mo change</th><th class="num">Return (XIRR)</th>
+  </tr></thead><tbody>`;
+  for (const a of DB.accounts.filter(a => a.active !== false)) {
+    const v = lastDate ? valueAt(a.id, lastDate) : null;
+    const prevDate = series.length >= 2 ? series[series.length - 2].date : null;
+    const pv = prevDate ? valueAt(a.id, prevDate) : null;
+    const flows = prevDate && lastDate ? flowsBetween(a.id, prevDate, lastDate) : 0;
+    const chg = v != null && pv != null ? v - pv - flows : null; // organic change
+    const isEarn = !!EARN_TYPES[a.type] && (v == null || v >= 0) && (pv == null || pv >= 0);
+    const r = isEarn ? accountXirr(a.id) : null; // return is meaningless for bank/cash/liabilities
+    html += `<tr>
+      <td><span class="acct-link" onclick="openLedger('${a.id}')">${esc(a.name)}</span></td>
+      <td><span class="chip" style="background:${ACCT_TYPES[a.type].color}"></span><span class="tag">${ACCT_TYPES[a.type].label}</span></td>
+      <td class="num">${fmtRs(v)}</td>
+      <td class="num ${chg != null && isEarn ? (chg >= 0 ? "delta-up" : "delta-down") : ""}">${chg != null ? fmtRs(chg) : "—"}${chg != null && !isEarn && Math.abs(chg) >= 1 ? ` <span class="tag">unlogged</span>` : ""}</td>
+      <td class="num ${r != null ? (r >= 0 ? "delta-up" : "delta-down") : ""}">${r != null ? fmtPct(r) : "—"}</td>
+    </tr>`;
+  }
+  html += `</tbody></table>
+  <p class="muted" style="margin-top:8px">1-mo change excludes your own deposits/withdrawals — it shows what the asset earned.</p></div>`;
+
+  /* AI review */
+  html += `<div class="card"><h2>AI monthly review</h2>
+    <p class="muted">Copies a full data summary to your clipboard — paste it to Claude
+    (or into this chat) for an optimization review: allocation drift, underperformers, spending trend.</p>
+    <p style="margin-top:10px"><button class="btn" onclick="copyAiPrompt()">Copy AI review prompt</button></p></div>`;
+  return html;
+}
+
+function targetDriftHtml(alloc, total) {
+  const t = DB.targets || {};
+  const keys = Object.keys(t).filter(k => t[k] > 0);
+  if (!keys.length) return `<p class="muted" style="margin-top:8px">Set target allocation in Settings to track drift.</p>`;
+  let rows = "";
+  for (const k of keys) {
+    const actual = (alloc[k] || 0) / total;
+    const drift = actual - t[k] / 100;
+    rows += `<tr><td><span class="chip" style="background:${ACCT_TYPES[k].color}"></span>${ACCT_TYPES[k].label}</td>
+      <td class="num">${(actual * 100).toFixed(1)}%</td><td class="num">${t[k]}%</td>
+      <td class="num ${Math.abs(drift) > 0.05 ? "delta-down" : "muted"}">${fmtPct(drift)}</td></tr>`;
+  }
+  return `<table style="margin-top:10px"><thead><tr><th>Type</th><th class="num">Actual</th><th class="num">Target</th><th class="num">Drift</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+/* ---------------- Review (reconciliation statement) ---------------- */
+const EARN_TYPES = { brokerage: 1, fixed_income: 1, business: 1, property: 1, other: 1 };
+
+function flowBreakdown(accountId, after, upto) {
+  const b = { income: 0, spend: 0, transfer_in: 0, transfer_out: 0 };
+  DB.txns.forEach(t => {
+    if (t.account_id === accountId && t.date > after && t.date <= upto) b[t.kind] += t.amount;
+  });
+  return b;
+}
+
+/* per snapshot period: net money the user added vs what investments earned */
+function periodBreakdown() {
+  const dates = snapDates(); const out = [];
+  for (let i = 1; i < dates.length; i++) {
+    const prev = dates[i - 1], cur = dates[i];
+    let added = 0, spent = 0, earned = 0;
+    DB.txns.forEach(t => {
+      if (t.date > prev && t.date <= cur) {
+        if (t.kind === "income") added += t.amount;
+        if (t.kind === "spend") spent += t.amount;
+      }
+    });
+    for (const a of DB.accounts) {
+      const pv = valueAt(a.id, prev) || 0, cv = valueAt(a.id, cur) || 0;
+      const res = cv - pv - flowsBetween(a.id, prev, cur);
+      if (EARN_TYPES[a.type] && pv >= 0 && cv >= 0) earned += res;
+    }
+    out.push({ label: cur.slice(2, 7), added: added - spent, earned });
+  }
+  return out.slice(-12);
+}
+
+function groupedBarChart(data) {
+  const W = 900, H = 240, P = { l: 64, r: 10, t: 14, b: 28 };
+  const vals = data.flatMap(d => [d.added, d.earned, 0]);
+  let vmin = Math.min(...vals), vmax = Math.max(...vals);
+  const pad = (vmax - vmin) * 0.12 || 1; vmax += pad; if (vmin < 0) vmin -= pad;
+  const Y = v => P.t + (1 - (v - vmin) / (vmax - vmin)) * (H - P.t - P.b);
+  const slot = (W - P.l - P.r) / data.length;
+  const bw = Math.min(26, slot / 2 - 6);
+  let grid = "";
+  for (let g = 0; g <= 3; g++) {
+    const v = vmin + (vmax - vmin) * g / 3, y = Y(v);
+    grid += `<line x1="${P.l}" y1="${y}" x2="${W - P.r}" y2="${y}" stroke="var(--grid)"/>
+      <text x="${P.l - 8}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${fmtRs(v, true)}</text>`;
+  }
+  const y0 = Y(0);
+  let bars = "", xl = "";
+  data.forEach((d, i) => {
+    const cx = P.l + (i + 0.5) * slot;
+    [[d.added, "var(--s1)", "You added"], [d.earned, "var(--s2)", "Earned"]].forEach(([v, col, name], j) => {
+      const x = cx + (j === 0 ? -bw - 2 : 2);
+      const yTop = Math.min(Y(v), y0), h = Math.abs(Y(v) - y0);
+      if (h > 0.5) bars += `<rect x="${x}" y="${yTop}" width="${bw}" height="${h}" rx="3" fill="${col}"
+        data-tt="${d.label} · ${name}: ${fmtRs(v)}"/>`;
+      else bars += `<rect x="${x}" y="${y0 - 1}" width="${bw}" height="2" fill="${col}" opacity=".4"
+        data-tt="${d.label} · ${name}: ${fmtRs(v)}"/>`;
+    });
+    if (data.length <= 8 || i % 2 === 0)
+      xl += `<text x="${cx}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--muted)">${d.label}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" class="hoverable" role="img" aria-label="Money added vs investment earnings per period">
+    ${grid}${bars}
+    <line x1="${P.l}" y1="${y0}" x2="${W - P.r}" y2="${y0}" stroke="var(--baseline)" stroke-width="1.5"/>${xl}</svg>`;
+}
+
+function viewReview() {
+  const dates = snapDates();
+  if (dates.length < 2)
+    return `<div class="card"><div class="empty">The reconciliation statement needs at least two snapshots.<br>
+      Record this month's snapshot first.</div></div>`;
+  if (reviewIdx == null || reviewIdx < 1 || reviewIdx >= dates.length) reviewIdx = dates.length - 1;
+  const prev = dates[reviewIdx - 1], cur = dates[reviewIdx];
+  const opts = [];
+  for (let i = dates.length - 1; i >= 1; i--)
+    opts.push(`<option value="${i}" ${i === reviewIdx ? "selected" : ""}>${dates[i - 1]} → ${dates[i]}</option>`);
+
+  let rows = "", tot = { open: 0, tin: 0, tout: 0, close: 0, earned: 0, unexpl: 0, income: 0, spend: 0 };
+  for (const a of DB.accounts) {
+    const open = valueAt(a.id, prev) || 0;
+    const close = valueAt(a.id, cur) || 0;
+    const b = flowBreakdown(a.id, prev, cur);
+    const inn = b.income + b.transfer_in, out = b.spend + b.transfer_out;
+    if (!open && !close && !inn && !out) continue;
+    const residual = close - open - inn + out;
+    const isEarn = !!EARN_TYPES[a.type] && open >= 0 && close >= 0; // liabilities are never "earnings"
+    tot.open += open; tot.close += close; tot.tin += inn; tot.tout += out;
+    tot.income += b.income; tot.spend += b.spend;
+    if (isEarn) tot.earned += residual; else tot.unexpl += residual;
+    const resCls = residual > 0 ? "delta-up" : residual < 0 ? "delta-down" : "muted";
+    const resTag = isEarn ? "earned" : (Math.abs(residual) < 1 ? "reconciled ✓" : "unexplained");
+    rows += `<tr>
+      <td><span class="chip" style="background:${ACCT_TYPES[a.type].color}"></span>${esc(a.name)}</td>
+      <td class="num">${fmtRs(open)}</td>
+      <td class="num">${inn ? "+" + fmtRs(inn).replace("Rs ", "") : "—"}</td>
+      <td class="num">${out ? "−" + fmtRs(out).replace("Rs ", "") : "—"}</td>
+      <td class="num">${fmtRs(close)}</td>
+      <td class="num ${resCls}">${Math.abs(residual) < 1 ? "" : fmtRs(residual)} <span class="tag">${resTag}</span></td>
+    </tr>`;
+  }
+  const dNW = tot.close - tot.open;
+  const unexplBad = Math.abs(tot.unexpl) >= 1;
+  return `<div class="card"><h2>Reconciliation statement
+      <span class="sub"><select style="width:auto;padding:4px 8px" onchange="reviewIdx=+this.value;render()">${opts.join("")}</select></span></h2>
+    <p class="muted">Opening + money you added − money you took out should equal closing.
+      The difference is <strong>earned</strong> for investments — and <strong>unexplained</strong> for bank/cash,
+      i.e. money that moved without a ledger entry.</p>
+    <table style="margin-top:10px"><thead><tr>
+      <th>Account</th><th class="num">Opening</th><th class="num">My money in</th><th class="num">My money out</th>
+      <th class="num">Closing</th><th class="num">Difference</th></tr></thead>
+    <tbody>${rows}
+      <tr style="font-weight:700"><td>Total</td><td class="num">${fmtRs(tot.open)}</td>
+        <td class="num">${tot.tin ? "+" + fmtRs(tot.tin).replace("Rs ", "") : "—"}</td>
+        <td class="num">${tot.tout ? "−" + fmtRs(tot.tout).replace("Rs ", "") : "—"}</td>
+        <td class="num">${fmtRs(tot.close)}</td>
+        <td class="num ${dNW >= 0 ? "delta-up" : "delta-down"}">${fmtRs(dNW)}</td></tr>
+    </tbody></table></div>
+
+    <div class="card"><h2>Where the change came from</h2>
+      <table><tbody>
+        <tr><td>Net worth change (${prev} → ${cur})</td><td class="num ${dNW >= 0 ? "delta-up" : "delta-down"}">${fmtRs(dNW)}</td></tr>
+        <tr><td>Added (fresh money in)</td><td class="num">${fmtRs(tot.income)}</td></tr>
+        <tr><td>Withdrawn (spending)</td><td class="num">${tot.spend ? "−" + fmtRs(tot.spend).replace("Rs ", "") : fmtRs(0)}</td></tr>
+        <tr><td>Investments earned</td><td class="num ${tot.earned >= 0 ? "delta-up" : "delta-down"}">${fmtRs(tot.earned)}</td></tr>
+        <tr><td>Unexplained (bank/cash moved without a ledger entry)</td>
+          <td class="num ${unexplBad ? "delta-down" : "delta-up"}">${unexplBad ? fmtRs(tot.unexpl) : "Rs 0 ✓ fully reconciled"}</td></tr>
+      </tbody></table>
+      ${unexplBad ? `<p class="muted" style="margin-top:8px">To reconcile: add the missing income / spending / transfer
+        entries in the Ledger for this period until Unexplained reads zero.</p>` : ""}
+    </div>`;
+}
+
+/* ---------------- charts (hand-rolled SVG) ---------------- */
+function lineChart(series) {
+  const W = 900, H = 260, P = { l: 60, r: 16, t: 14, b: 30 };
+  const xs = series.map((_, i) => i);
+  const vals = series.map(s => s.value);
+  const vmin = Math.min(...vals), vmax = Math.max(...vals);
+  const pad = (vmax - vmin) * 0.1 || vmax * 0.1 || 1;
+  const y0 = Math.max(0, vmin - pad), y1 = vmax + pad;
+  const X = i => P.l + (xs.length === 1 ? 0 : i / (xs.length - 1)) * (W - P.l - P.r);
+  const Y = v => P.t + (1 - (v - y0) / (y1 - y0)) * (H - P.t - P.b);
+  const pts = series.map((s, i) => `${X(i).toFixed(1)},${Y(s.value).toFixed(1)}`).join(" ");
+  let grid = "", labels = "";
+  for (let g = 0; g <= 3; g++) {
+    const v = y0 + (y1 - y0) * g / 3, y = Y(v);
+    grid += `<line x1="${P.l}" y1="${y}" x2="${W - P.r}" y2="${y}" stroke="var(--grid)" stroke-width="1"/>`;
+    labels += `<text x="${P.l - 8}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${fmtRs(v, true)}</text>`;
+  }
+  const step = Math.max(1, Math.ceil(series.length / 8));
+  let xlabels = "";
+  series.forEach((s, i) => {
+    if (i % step === 0 || i === series.length - 1)
+      xlabels += `<text x="${X(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${s.date.slice(2, 7)}</text>`;
+  });
+  const dots = series.map((s, i) =>
+    `<circle cx="${X(i)}" cy="${Y(s.value)}" r="10" fill="transparent" data-tt="${s.date}: ${fmtRs(s.value)}" data-cx="${X(i)}"/>`).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" class="hoverable" role="img" aria-label="Net worth trend">
+    ${grid}${labels}${xlabels}
+    <polyline points="${pts}" fill="none" stroke="var(--seq)" stroke-width="2" stroke-linejoin="round"/>
+    ${series.map((s, i) => `<circle cx="${X(i)}" cy="${Y(s.value)}" r="3.5" fill="var(--seq)" stroke="var(--surface-1)" stroke-width="2"/>`).join("")}
+    ${dots}</svg>`;
+}
+
+function barChart(data) {
+  const W = 460, H = 200, P = { l: 54, r: 8, t: 12, b: 26 };
+  const vmax = Math.max(...data.map(d => d.value)) * 1.15 || 1;
+  const bw = Math.min(40, (W - P.l - P.r) / data.length - 6);
+  const X = i => P.l + (i + 0.5) * ((W - P.l - P.r) / data.length);
+  const Y = v => P.t + (1 - v / vmax) * (H - P.t - P.b);
+  let grid = "";
+  for (let g = 0; g <= 2; g++) {
+    const v = vmax * g / 2, y = Y(v);
+    grid += `<line x1="${P.l}" y1="${y}" x2="${W - P.r}" y2="${y}" stroke="var(--grid)"/>
+      <text x="${P.l - 6}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--muted)">${fmtRs(v, true)}</text>`;
+  }
+  let bars = "", xl = "";
+  data.forEach((d, i) => {
+    const y = Y(d.value), h = H - P.b - y;
+    bars += `<path d="M${X(i) - bw / 2},${H - P.b} v${-(h - 4)} q0,-4 4,-4 h${bw - 8} q4,0 4,4 v${h - 4} z"
+      fill="var(--seq)" data-tt="${d.month}: ${fmtRs(d.value)}"/>`;
+    if (data.length <= 8 || i % 2 === 0)
+      xl += `<text x="${X(i)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--muted)">${d.month.slice(2)}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" class="hoverable" role="img" aria-label="Monthly spending">${grid}${bars}${xl}</svg>`;
+}
+
+function donutChart(alloc, total) {
+  const entries = Object.entries(alloc).sort((a, b) => b[1] - a[1]);
+  const R = 70, r = 44, cx = 90, cy = 90;
+  let angle = -Math.PI / 2, paths = "";
+  for (const [type, v] of entries) {
+    const frac = v / total, a2 = angle + frac * Math.PI * 2;
+    const large = frac > 0.5 ? 1 : 0;
+    const gap = 0.02; // ~2px surface gap between segments
+    const x1 = cx + R * Math.cos(angle + gap), y1 = cy + R * Math.sin(angle + gap);
+    const x2 = cx + R * Math.cos(a2 - gap), y2 = cy + R * Math.sin(a2 - gap);
+    const x3 = cx + r * Math.cos(a2 - gap), y3 = cy + r * Math.sin(a2 - gap);
+    const x4 = cx + r * Math.cos(angle + gap), y4 = cy + r * Math.sin(angle + gap);
+    paths += `<path d="M${x1},${y1} A${R},${R} 0 ${large} 1 ${x2},${y2} L${x3},${y3} A${r},${r} 0 ${large} 0 ${x4},${y4} z"
+      fill="${ACCT_TYPES[type].color}" data-tt="${ACCT_TYPES[type].label}: ${fmtRs(v)} (${(frac * 100).toFixed(1)}%)"/>`;
+    angle = a2;
+  }
+  const legend = entries.map(([type, v]) =>
+    `<span><span class="chip" style="background:${ACCT_TYPES[type].color}"></span>${ACCT_TYPES[type].label}
+     <strong>${(v / total * 100).toFixed(0)}%</strong></span>`).join("");
+  return `<div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+    <svg viewBox="0 0 180 180" style="width:170px" class="hoverable" role="img" aria-label="Asset allocation">${paths}
+      <text x="${cx}" y="${cy - 2}" text-anchor="middle" font-size="13" font-weight="700" fill="var(--ink)">${fmtRs(total, true)}</text>
+      <text x="${cx}" y="${cy + 14}" text-anchor="middle" font-size="10" fill="var(--muted)">total</text></svg>
+    <div class="legend" style="flex-direction:column;gap:6px">${legend}</div></div>`;
+}
+
+function attachChartHovers() {
+  const tt = document.getElementById("tt");
+  document.querySelectorAll(".hoverable [data-tt]").forEach(el => {
+    el.addEventListener("mousemove", e => {
+      tt.textContent = el.getAttribute("data-tt");
+      tt.style.display = "block";
+      tt.style.left = Math.min(e.clientX + 12, window.innerWidth - 180) + "px";
+      tt.style.top = (e.clientY - 34) + "px";
+    });
+    el.addEventListener("mouseleave", () => tt.style.display = "none");
+  });
+}
+
+/* ---------------- Ledger ---------------- */
+function openLedger(id) { ledgerFilter = id; nav("Ledger"); }
+function viewLedger() {
+  const acctOpts = DB.accounts.filter(a => a.active !== false)
+    .map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join("");
+  if (!DB.accounts.length)
+    return `<div class="card"><div class="empty">Add accounts first, then record transactions here.
+      <p style="margin-top:10px"><button class="btn" onclick="nav('Accounts')">Add accounts</button></p></div></div>`;
+
+  let html = `<div class="grid2">
+  <div class="card"><h2>Record money in / out</h2>
+    <label>Account</label><select id="txA">${acctOpts}</select>
+    <label>Type</label><select id="txK">
+      <option value="income">Add — new money into this account (salary, profit received…)</option>
+      <option value="spend">Withdraw — money taken out (expenses, personal use)</option>
+    </select>
+    <div class="row"><div><label>Date</label><input type="date" id="txD" value="${today()}"></div>
+    <div><label>Amount (Rs)</label><input type="number" id="txAmt" min="0" step="any" placeholder="50000"></div></div>
+    <label>Note (optional)</label><input id="txN" placeholder="e.g. July salary / house expense">
+    <p style="margin-top:12px"><button class="btn" onclick="addTxn()">Add entry</button></p>
+  </div>
+  <div class="card"><h2>Transfer between accounts</h2>
+    <label>From</label><select id="tfFrom">${acctOpts}</select>
+    <label>To</label><select id="tfTo">${acctOpts}</select>
+    <div class="row"><div><label>Date</label><input type="date" id="tfD" value="${today()}"></div>
+    <div><label>Amount (Rs)</label><input type="number" id="tfAmt" min="0" step="any"></div></div>
+    <label>Note (optional)</label><input id="tfN" placeholder="e.g. bank → fixed income deposit">
+    <p style="margin-top:12px"><button class="btn" onclick="addTransfer()">Add transfer</button></p>
+    <p class="muted" style="margin-top:8px">Use this for: bank → brokerage funding, fixed-income deposits/withdrawals,
+    dividends paid into your bank, etc.</p>
+  </div></div>`;
+
+  /* list */
+  const filterOpts = `<option value="">All accounts</option>` + DB.accounts
+    .map(a => `<option value="${a.id}" ${ledgerFilter === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("");
+  let txns = [...DB.txns].sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
+  if (ledgerFilter) txns = txns.filter(t => t.account_id === ledgerFilter);
+  if (ledgerSearch) {
+    const q = ledgerSearch.toLowerCase();
+    txns = txns.filter(t => (t.note || "").toLowerCase().includes(q) ||
+      String(t.amount).includes(q) || t.date.includes(q) ||
+      acctName(t.account_id).toLowerCase().includes(q));
+  }
+
+  html += `<div class="card"><h2>Ledger
+    <span class="sub"><select style="width:auto;padding:4px 8px" onchange="ledgerFilter=this.value||null;render()">${filterOpts}</select>
+    <input style="width:200px;padding:4px 10px;margin-left:8px;display:inline-block" placeholder="Search note, amount, date…"
+      value="${esc(ledgerSearch)}" oninput="ledgerSearch=this.value;clearTimeout(window._lst);window._lst=setTimeout(render,300)"></span></h2>`;
+  if (!txns.length) html += `<div class="empty">No transactions yet.</div>`;
+  else {
+    html += `<table><thead><tr><th>Date</th><th>Account</th><th>Type</th><th class="num">Amount</th><th>Note</th><th></th></tr></thead><tbody>`;
+    for (const t of txns.slice(0, 200)) {
+      const k = TXN_KINDS[t.kind];
+      html += `<tr><td>${t.date}</td><td>${esc(acctName(t.account_id))}</td>
+        <td><span class="kindpill">${k.label.split(" — ")[0].split(" (")[0]}</span></td>
+        <td class="num ${k.sign > 0 ? "delta-up" : "delta-down"}">${k.sign > 0 ? "+" : "−"}${fmtRs(t.amount).replace("Rs ", "")}</td>
+        <td class="muted">${esc(t.note || "")}</td>
+        <td style="white-space:nowrap">
+          <button class="btn secondary" style="padding:2px 8px;font-size:11px" onclick="openTxnEdit('${t.id}')">✎</button>
+          <button class="btn danger" style="padding:2px 8px;font-size:11px" onclick="delTxn('${t.id}')">✕</button></td></tr>`;
+    }
+    html += `</tbody></table>`;
+    if (txns.length > 200) html += `<p class="muted">Showing latest 200.</p>`;
+  }
+  html += `</div>`;
+  return html;
+}
+async function addTxn() {
+  const amt = parseFloat(document.getElementById("txAmt").value);
+  if (!amt || amt <= 0) return toast("Enter an amount");
+  const row = { id: uid(), account_id: document.getElementById("txA").value,
+    kind: document.getElementById("txK").value, date: document.getElementById("txD").value,
+    amount: amt, note: document.getElementById("txN").value || null };
+  DB.txns.push(row); await persistInsert("transactions", row);
+  toast("Added"); render();
+}
+async function addTransfer() {
+  const amt = parseFloat(document.getElementById("tfAmt").value);
+  const from = document.getElementById("tfFrom").value, to = document.getElementById("tfTo").value;
+  if (!amt || amt <= 0) return toast("Enter an amount");
+  if (from === to) return toast("Pick two different accounts");
+  const d = document.getElementById("tfD").value, n = document.getElementById("tfN").value || null;
+  const g = uid();
+  const r1 = { id: uid(), account_id: from, kind: "transfer_out", date: d, amount: amt, note: n, group_id: g };
+  const r2 = { id: uid(), account_id: to, kind: "transfer_in", date: d, amount: amt, note: n, group_id: g };
+  DB.txns.push(r1, r2);
+  await persistInsert("transactions", r1); await persistInsert("transactions", r2);
+  toast("Transfer added"); render();
+}
+async function delTxn(id) {
+  const t = DB.txns.find(x => x.id === id); if (!t) return;
+  const group = t.group_id ? DB.txns.filter(x => x.group_id === t.group_id) : [t];
+  if (!confirm(group.length > 1 ? "Delete both sides of this transfer?" : "Delete this entry?")) return;
+  for (const g of group) {
+    DB.txns = DB.txns.filter(x => x.id !== g.id);
+    await persistDelete("transactions", g.id);
+  }
+  render();
+}
+
+function openTxnEdit(id) {
+  const t = DB.txns.find(x => x.id === id); if (!t) return;
+  const isTransfer = t.kind === "transfer_in" || t.kind === "transfer_out";
+  const acctOpts = DB.accounts.map(a =>
+    `<option value="${a.id}" ${a.id === t.account_id ? "selected" : ""}>${esc(a.name)}</option>`).join("");
+  const old = document.getElementById("txnDlg"); if (old) old.remove();
+  const dlg = document.createElement("dialog");
+  dlg.id = "txnDlg";
+  dlg.innerHTML = `<h2 style="font-size:15px;margin-bottom:4px">Edit entry</h2>
+    <p class="muted">${isTransfer ? "This is one side of a transfer — date, amount and note update both sides." : ""}</p>
+    <label>Date</label><input type="date" id="edD" value="${t.date}">
+    <label>Amount (Rs)</label><input type="number" step="any" id="edA" value="${t.amount}">
+    ${isTransfer ? "" : `<label>Account</label><select id="edAcct">${acctOpts}</select>
+    <label>Type</label><select id="edK">
+      <option value="income" ${t.kind === "income" ? "selected" : ""}>Income</option>
+      <option value="spend" ${t.kind === "spend" ? "selected" : ""}>Personal spending</option></select>`}
+    <label>Note</label><input id="edN" value="${esc(t.note || "")}">
+    <p style="margin-top:14px;display:flex;gap:8px">
+      <button class="btn" onclick="saveTxnEdit('${t.id}')">Save</button>
+      <button class="btn secondary" onclick="document.getElementById('txnDlg').close()">Cancel</button></p>`;
+  document.body.appendChild(dlg);
+  dlg.showModal();
+}
+async function saveTxnEdit(id) {
+  const t = DB.txns.find(x => x.id === id); if (!t) return;
+  const date = document.getElementById("edD").value;
+  const amount = parseFloat(document.getElementById("edA").value);
+  const note = document.getElementById("edN").value || null;
+  if (!date || !amount || amount <= 0) return toast("Enter a valid date and amount");
+  const group = t.group_id ? DB.txns.filter(x => x.group_id === t.group_id) : [t];
+  for (const g of group) {
+    g.date = date; g.amount = amount; g.note = note;
+    if (group.length === 1) {
+      const acctEl = document.getElementById("edAcct"), kEl = document.getElementById("edK");
+      if (acctEl) g.account_id = acctEl.value;
+      if (kEl) g.kind = kEl.value;
+    }
+    await persistUpdate("transactions", g.id,
+      { date: g.date, amount: g.amount, note: g.note, account_id: g.account_id, kind: g.kind });
+  }
+  document.getElementById("txnDlg").close();
+  toast("Updated"); render();
+}
+
+/* ---------------- Snapshot ---------------- */
+function viewSnapshot() {
+  if (!DB.accounts.length)
+    return `<div class="card"><div class="empty">Add accounts first.</div></div>`;
+  const dates = snapDates();
+  const defDate = snapDateSel || today();
+  const editing = dates.includes(defDate); // picking a past snapshot date = edit it
+  const lastD = dates.filter(d => d < defDate).slice(-1)[0] || null;
+  let rows = "";
+  for (const a of DB.accounts.filter(a => a.active !== false)) {
+    const prevV = lastD ? valueAt(a.id, lastD) : null;
+    const flow = lastD ? flowsBetween(a.id, lastD, defDate) : 0;
+    const existing = editing ? DB.snapshots.find(s => s.date === defDate && s.account_id === a.id) : null;
+    const suggested = existing ? existing.value : (prevV != null ? prevV + flow : "");
+    rows += `<tr><td><span class="chip" style="background:${ACCT_TYPES[a.type].color}"></span>${esc(a.name)}</td>
+      <td class="num muted">${prevV != null ? fmtRs(prevV) : "—"}</td>
+      <td class="num muted">${flow ? (flow > 0 ? "+" : "−") + fmtRs(Math.abs(flow)).replace("Rs ", "") : "—"}</td>
+      <td style="max-width:160px"><input type="number" step="any" class="snapVal" data-acct="${a.id}"
+        value="${suggested !== "" ? Math.round(suggested) : ""}" placeholder="current value"></td></tr>`;
+  }
+  return `<div class="card"><h2>${editing ? "Edit snapshot" : "Monthly snapshot"} <span class="sub">${editing ? "existing values loaded — change and re-save" : "mark everything to market"}</span></h2>
+    <p class="muted">Prefilled with last snapshot + ledger flows since. Overwrite each with the real value
+    (broker app total, fixed-income current value, bank balance). Pick a past snapshot date to edit it.</p>
+    <div class="row" style="margin:12px 0"><div style="max-width:200px"><label>Snapshot date</label>
+      <input type="date" id="snapDate" value="${defDate}" onchange="snapDateSel=this.value;render()"></div></div>
+    <table><thead><tr><th>Account</th><th class="num">Last (${lastD || "none"})</th><th class="num">Flows since</th><th>Value now</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    <p style="margin-top:14px"><button class="btn" onclick="saveSnapshot()">Save snapshot</button></p></div>
+    ${snapHistoryHtml()}`;
+}
+function snapHistoryHtml() {
+  const dates = snapDates().slice().reverse();
+  if (!dates.length) return "";
+  let html = `<div class="card"><h2>Snapshot history</h2><table><thead><tr><th>Date</th><th class="num">Net worth</th><th class="num">Change</th><th></th></tr></thead><tbody>`;
+  const series = netWorthSeries();
+  const byDate = Object.fromEntries(series.map(s => [s.date, s.value]));
+  dates.forEach((d, i) => {
+    const prev = dates[i + 1];
+    const chg = prev != null ? byDate[d] - byDate[prev] : null;
+    html += `<tr><td><span class="acct-link" onclick="snapDateSel='${d}';render();window.scrollTo(0,0)">${d}</span></td>
+      <td class="num">${fmtRs(byDate[d])}</td>
+      <td class="num ${chg != null ? (chg >= 0 ? "delta-up" : "delta-down") : ""}">${chg != null ? fmtRs(chg) : "—"}</td>
+      <td><button class="btn danger" style="padding:2px 8px;font-size:11px" onclick="delSnapshot('${d}')">✕</button></td></tr>`;
+  });
+  return html + `</tbody></table></div>`;
+}
+async function saveSnapshot() {
+  const date = document.getElementById("snapDate").value;
+  if (!date) return toast("Pick a date");
+  const inputs = [...document.querySelectorAll(".snapVal")];
+  let n = 0;
+  for (const inp of inputs) {
+    const v = parseFloat(inp.value);
+    if (isNaN(v)) continue;
+    const acct = inp.getAttribute("data-acct");
+    const existing = DB.snapshots.find(s => s.date === date && s.account_id === acct);
+    if (existing) {
+      existing.value = v; await persistUpdate("snapshots", existing.id, { value: v });
+    } else {
+      const row = { id: uid(), date, account_id: acct, value: v };
+      DB.snapshots.push(row); await persistInsert("snapshots", row);
+    }
+    n++;
+  }
+  toast(`Snapshot saved (${n} accounts)`); nav("Dashboard");
+}
+async function delSnapshot(date) {
+  if (!confirm(`Delete all snapshot entries for ${date}?`)) return;
+  const rows = DB.snapshots.filter(s => s.date === date);
+  for (const r of rows) { DB.snapshots = DB.snapshots.filter(s => s.id !== r.id); await persistDelete("snapshots", r.id); }
+  render();
+}
+
+/* ---------------- Accounts ---------------- */
+function viewAccounts() {
+  const typeOpts = Object.entries(ACCT_TYPES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("");
+  let html = `<div class="card"><h2>Add account</h2>
+    <div class="row">
+      <div><label>Name</label><input id="acN" placeholder="e.g. Meezan Bank / TS Securities / Behbood Certificates"></div>
+      <div style="max-width:200px"><label>Type</label><select id="acT">${typeOpts}</select></div>
+      <div style="max-width:140px"><button class="btn" onclick="addAccount()">Add</button></div>
+    </div>
+    <p class="muted" style="margin-top:8px">Your PSX brokerage is ONE account here — track individual stocks in your existing dashboard.
+    Each fixed-income instrument (Behbood, TDR, money-market fund…) works best as its own account so you see each one's true return.</p></div>`;
+  html += `<div class="card"><h2>Your accounts</h2>`;
+  if (!DB.accounts.length) html += `<div class="empty">No accounts yet.</div>`;
+  else {
+    html += `<table><thead><tr><th>Name</th><th>Type</th><th class="num">Latest value</th><th></th></tr></thead><tbody>`;
+    const lastD = latestSnapDate();
+    for (const a of DB.accounts) {
+      html += `<tr style="${a.active === false ? "opacity:.45" : ""}">
+        <td>${esc(a.name)}</td>
+        <td><span class="chip" style="background:${ACCT_TYPES[a.type].color}"></span><span class="tag">${ACCT_TYPES[a.type].label}</span></td>
+        <td class="num">${lastD ? fmtRs(valueAt(a.id, lastD)) : "—"}</td>
+        <td style="text-align:right">
+          <button class="btn secondary" style="padding:3px 10px;font-size:12px" onclick="toggleAccount('${a.id}')">${a.active === false ? "Reactivate" : "Archive"}</button>
+          <button class="btn danger" style="padding:3px 10px;font-size:12px" onclick="delAccount('${a.id}')">Delete</button>
+        </td></tr>`;
+    }
+    html += `</tbody></table>`;
+  }
+  return html + `</div>`;
+}
+async function addAccount() {
+  const name = document.getElementById("acN").value.trim();
+  if (!name) return toast("Enter a name");
+  const row = { id: uid(), name, type: document.getElementById("acT").value, active: true };
+  DB.accounts.push(row); await persistInsert("accounts", row);
+  toast("Account added"); render();
+}
+async function toggleAccount(id) {
+  const a = acctById(id); a.active = a.active === false;
+  await persistUpdate("accounts", id, { active: a.active }); render();
+}
+async function delAccount(id) {
+  const nTx = DB.txns.filter(t => t.account_id === id).length;
+  const nSn = DB.snapshots.filter(s => s.account_id === id).length;
+  if (!confirm(`Delete this account AND its ${nTx} transactions + ${nSn} snapshot entries? Archive is usually safer.`)) return;
+  for (const t of DB.txns.filter(t => t.account_id === id)) await persistDelete("transactions", t.id);
+  for (const s of DB.snapshots.filter(s => s.account_id === id)) await persistDelete("snapshots", s.id);
+  DB.txns = DB.txns.filter(t => t.account_id !== id);
+  DB.snapshots = DB.snapshots.filter(s => s.account_id !== id);
+  DB.accounts = DB.accounts.filter(a => a.id !== id);
+  await persistDelete("accounts", id);
+  render();
+}
+
+/* ---------------- Import ---------------- */
+function viewImport() {
+  return `<div class="card"><h2>Import history — monthly valuations</h2>
+    <p class="muted">Paste rows from your Google Sheet as CSV: <code>date, account name, value</code> —
+    one row per account per month. Dates like 2025-01-31 or 31/01/2025. Accounts are created automatically
+    (you can fix their type afterwards on the Accounts page).</p>
+    <label>CSV rows</label>
+    <textarea id="impSnaps" rows="8" placeholder="2025-01-31, Meezan Bank, 850000&#10;2025-01-31, TS Securities, 1400000&#10;2025-01-31, Behbood, 2000000"></textarea>
+    <p style="margin-top:10px"><button class="btn" onclick="importSnaps()">Import valuations</button></p></div>
+
+  <div class="card"><h2>Import history — ledger entries</h2>
+    <p class="muted">CSV: <code>date, account name, kind, amount, note</code> where kind is
+    <code>income</code>, <code>spend</code>, <code>deposit</code> (= transfer in) or <code>withdraw</code> (= transfer out).</p>
+    <label>CSV rows</label>
+    <textarea id="impTxns" rows="8" placeholder="2025-02-10, Behbood, deposit, 500000, new certificate&#10;2025-03-05, Meezan Bank, spend, 120000, monthly expenses"></textarea>
+    <p style="margin-top:10px"><button class="btn" onclick="importTxns()">Import ledger</button></p></div>
+
+  <div class="card"><h2>Backup / restore</h2>
+    <p style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn secondary" onclick="exportJson()">Download backup (JSON)</button>
+      <label class="btn secondary" style="display:inline-block;cursor:pointer">Restore from backup
+        <input type="file" accept=".json" style="display:none" onchange="importJson(event)"></label>
+    </p></div>`;
+}
+function parseCsvLines(text) {
+  return text.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+    .map(l => l.split(",").map(c => c.trim()));
+}
+function parseDateCell(s) {
+  s = s.trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/); // dd/mm/yyyy
+  if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  return null;
+}
+function parseAmountCell(s) { return parseFloat(String(s).replace(/[Rs,\s"]/gi, "")); }
+async function findOrCreateAccount(name) {
+  let a = DB.accounts.find(x => x.name.toLowerCase() === name.toLowerCase());
+  if (!a) {
+    a = { id: uid(), name, type: "other", active: true };
+    DB.accounts.push(a); await persistInsert("accounts", a);
+  }
+  return a;
+}
+async function importSnaps() {
+  const lines = parseCsvLines(document.getElementById("impSnaps").value);
+  let ok = 0, bad = 0;
+  for (const cells of lines) {
+    if (cells.length < 3) { bad++; continue; }
+    const date = parseDateCell(cells[0]); const val = parseAmountCell(cells[cells.length - 1]);
+    const name = cells.slice(1, cells.length - 1).join(",").trim();
+    if (!date || !name || isNaN(val)) { bad++; continue; }
+    const a = await findOrCreateAccount(name);
+    const existing = DB.snapshots.find(s => s.date === date && s.account_id === a.id);
+    if (existing) { existing.value = val; await persistUpdate("snapshots", existing.id, { value: val }); }
+    else { const row = { id: uid(), date, account_id: a.id, value: val }; DB.snapshots.push(row); await persistInsert("snapshots", row); }
+    ok++;
+  }
+  toast(`Imported ${ok} valuation rows${bad ? `, skipped ${bad}` : ""}`);
+  if (ok) nav("Dashboard");
+}
+async function importTxns() {
+  const lines = parseCsvLines(document.getElementById("impTxns").value);
+  const kindMap = { income: "income", spend: "spend", expense: "spend",
+    deposit: "transfer_in", withdraw: "transfer_out", withdrawal: "transfer_out",
+    transfer_in: "transfer_in", transfer_out: "transfer_out" };
+  let ok = 0, bad = 0;
+  for (const cells of lines) {
+    if (cells.length < 4) { bad++; continue; }
+    const date = parseDateCell(cells[0]); const name = cells[1];
+    const kind = kindMap[(cells[2] || "").toLowerCase()]; const amt = parseAmountCell(cells[3]);
+    if (!date || !name || !kind || isNaN(amt)) { bad++; continue; }
+    const a = await findOrCreateAccount(name);
+    const row = { id: uid(), account_id: a.id, kind, date, amount: Math.abs(amt), note: cells.slice(4).join(",") || null };
+    DB.txns.push(row); await persistInsert("transactions", row); ok++;
+  }
+  toast(`Imported ${ok} ledger rows${bad ? `, skipped ${bad}` : ""}`);
+}
+function exportJson() {
+  const blob = new Blob([JSON.stringify(DB, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `r3dfunds-backup-${today()}.json`;
+  a.click();
+}
+function importJson(ev) {
+  const f = ev.target.files[0]; if (!f) return;
+  const rd = new FileReader();
+  rd.onload = async () => {
+    try {
+      const data = JSON.parse(rd.result);
+      if (!data.accounts) throw new Error("not a R3d Funds backup");
+      if (!confirm(`Restore ${data.accounts.length} accounts, ${(data.txns || []).length} transactions, ${(data.snapshots || []).length} snapshots? This replaces current local data.`)) return;
+      DB = Object.assign({ accounts: [], txns: [], snapshots: [], targets: {} }, data);
+      if (isCloud() && supaUser) {
+        toast("Backup loaded — pushing to cloud…");
+        for (const a of DB.accounts) await persistInsert("accounts", a).catch(() => {});
+        for (const t of DB.txns) await persistInsert("transactions", t).catch(() => {});
+        for (const s of DB.snapshots) await persistInsert("snapshots", s).catch(() => {});
+        await persistTargets();
+      } else localSave();
+      toast("Restored"); render();
+    } catch (e) { toast("Restore failed: " + e.message); }
+  };
+  rd.readAsText(f);
+}
+
+/* ---------------- Settings ---------------- */
+function viewSettings() {
+  const t = DB.targets || {};
+  const targetRows = Object.entries(ACCT_TYPES).map(([k, v]) =>
+    `<div><label>${v.label} %</label><input type="number" min="0" max="100" id="tg_${k}" value="${t[k] || ""}"></div>`).join("");
+  return `<div class="card"><h2>Target allocation <span class="sub">for drift alerts</span></h2>
+    <div class="row">${targetRows}</div>
+    <p style="margin-top:12px"><button class="btn" onclick="saveTargets()">Save targets</button></p></div>
+
+  <div class="card"><h2>Security <span class="sub">password lock — encrypts your data on this device</span></h2>
+    ${cfg.lockSalt ? `
+      <p class="muted">Lock is <strong>ON</strong> — data is AES-encrypted with your password.</p>
+      <div class="row" style="margin-top:8px">
+        <div><label>Current password</label><input type="password" id="pwOld"></div>
+        <div><label>New password</label><input type="password" id="pwNew"></div>
+        <div><label>Repeat new</label><input type="password" id="pwNew2"></div></div>
+      <p style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" onclick="changePassword()">Change password</button>
+        <button class="btn secondary" onclick="lockNow()">Lock now</button>
+        <button class="btn danger" onclick="removePassword()">Remove password</button></p>
+      <p class="muted" style="margin-top:8px">⚠ If you forget the password the data cannot be decrypted —
+      keep a JSON backup (Import tab) somewhere safe.</p>`
+    : `
+      <p class="muted">No password set. Set one so only you can open the app —
+      your data is then AES-256 encrypted on disk.</p>
+      <div class="row" style="margin-top:8px">
+        <div><label>Password (min 6 chars)</label><input type="password" id="pwNew"></div>
+        <div><label>Repeat</label><input type="password" id="pwNew2"></div></div>
+      <p style="margin-top:12px"><button class="btn" onclick="setPassword()">Set password & encrypt</button></p>
+      <p class="muted" style="margin-top:8px">⚠ There is no "forgot password" — keep a JSON backup (Import tab) somewhere safe.</p>`}
+  </div>
+
+  <div class="card"><h2>Cloud sync (Supabase)</h2>
+    <p class="muted">Leave blank to keep everything on this device (local mode). To sync across devices,
+    create a free Supabase project, run <code>schema.sql</code> in its SQL editor, then paste the
+    Project URL and anon public key here — see README.</p>
+    <label>Supabase URL</label><input id="sbUrl" value="${esc(cfg.supabaseUrl || "")}" placeholder="https://xxxx.supabase.co">
+    <label>Anon public key</label><input id="sbKey" value="${esc(cfg.supabaseKey || "")}" placeholder="eyJ…">
+    <p style="margin-top:12px"><button class="btn" onclick="saveSupa()">Save & reload</button>
+    ${isCloud() ? `<button class="btn secondary" onclick="clearSupa()">Switch to local mode</button>` : ""}</p>
+    ${isCloud() ? authHtml() : ""}</div>
+
+  <div class="card"><h2>Danger zone</h2>
+    <p><button class="btn danger" onclick="wipeLocal()">Erase local data on this device</button></p></div>`;
+}
+function authHtml() {
+  if (supaUser) return `<p style="margin-top:12px">Signed in as <strong>${esc(supaUser.email)}</strong>
+    <button class="btn secondary" onclick="signOut()">Sign out</button></p>`;
+  return `<hr style="border:none;border-top:1px solid var(--grid);margin:14px 0">
+    <div class="row"><div><label>Email</label><input id="auEmail" type="email"></div>
+    <div><label>Password</label><input id="auPass" type="password"></div></div>
+    <p style="margin-top:12px"><button class="btn" onclick="signIn()">Sign in</button>
+    <button class="btn secondary" onclick="signUp()">Create account</button></p>`;
+}
+function viewSignIn() {
+  return `<div class="card" style="max-width:420px;margin:40px auto"><h2>Sign in</h2>
+    <p class="muted">Cloud mode is configured — sign in to load your data.</p>
+    <div><label>Email</label><input id="auEmail" type="email"></div>
+    <div><label>Password</label><input id="auPass" type="password"></div>
+    <p style="margin-top:12px"><button class="btn" onclick="signIn()">Sign in</button>
+    <button class="btn secondary" onclick="signUp()">Create account</button>
+    <button class="btn secondary" onclick="nav('Settings')">Settings</button></p></div>`;
+}
+async function saveTargets() {
+  const t = {};
+  for (const k of Object.keys(ACCT_TYPES)) {
+    const v = parseFloat(document.getElementById("tg_" + k).value);
+    if (!isNaN(v) && v > 0) t[k] = v;
+  }
+  const sum = Object.values(t).reduce((a, b) => a + b, 0);
+  if (sum && Math.abs(sum - 100) > 0.5) return toast(`Targets sum to ${sum}% — make them total 100%`);
+  DB.targets = t; await persistTargets(); toast("Targets saved");
+}
+async function saveSupa() {
+  cfg.supabaseUrl = document.getElementById("sbUrl").value.trim();
+  cfg.supabaseKey = document.getElementById("sbKey").value.trim();
+  saveCfg(cfg); location.reload();
+}
+function clearSupa() {
+  if (!confirm("Switch back to local mode? Cloud data stays in Supabase untouched.")) return;
+  delete cfg.supabaseUrl; delete cfg.supabaseKey; saveCfg(cfg); location.reload();
+}
+async function signIn() {
+  const { error } = await supa.auth.signInWithPassword({
+    email: document.getElementById("auEmail").value, password: document.getElementById("auPass").value });
+  if (error) return toast(error.message);
+  location.reload();
+}
+async function signUp() {
+  const { error } = await supa.auth.signUp({
+    email: document.getElementById("auEmail").value, password: document.getElementById("auPass").value });
+  if (error) return toast(error.message);
+  toast("Account created — check email if confirmation is on, then sign in.");
+}
+async function signOut() { await supa.auth.signOut(); location.reload(); }
+function wipeLocal() {
+  if (!confirm("Erase ALL local data on this device? (Cloud data is not affected.) Download a backup first?")) return;
+  localStorage.removeItem(LS_KEY); localLoad(); render(); toast("Local data erased");
+}
+
+/* ---------------- sample data ---------------- */
+function loadSample() {
+  const mk = (name, type) => ({ id: uid(), name, type, active: true });
+  const bank = mk("Meezan Bank", "bank"), brok = mk("PSX Brokerage", "brokerage"),
+    beh = mk("Behbood Certificates", "fixed_income"), cash = mk("Cash in hand", "cash");
+  DB.accounts = [bank, brok, beh, cash];
+  DB.txns = []; DB.snapshots = [];
+  const months = ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30", "2026-05-31", "2026-06-30"];
+  const vals = {
+    [bank.id]: [800000, 760000, 900000, 830000, 870000, 910000],
+    [brok.id]: [1400000, 1480000, 1445000, 1610000, 1720000, 1690000],
+    [beh.id]:  [2000000, 2024000, 2048000, 2572000, 2603000, 2634000],
+    [cash.id]: [90000, 70000, 85000, 60000, 95000, 80000],
+  };
+  months.forEach((d, i) => { for (const [acct, arr] of Object.entries(vals))
+    DB.snapshots.push({ id: uid(), date: d, account_id: acct, value: arr[i] }); });
+  const tx = (acct, kind, date, amount, note) => DB.txns.push({ id: uid(), account_id: acct, kind, date, amount, note });
+  tx(bank.id, "income", "2026-02-05", 250000, "salary");
+  tx(bank.id, "spend", "2026-02-20", 140000, "household");
+  tx(bank.id, "income", "2026-03-05", 250000, "salary");
+  tx(bank.id, "spend", "2026-03-22", 155000, "household");
+  const g = uid();
+  DB.txns.push({ id: uid(), account_id: bank.id, kind: "transfer_out", date: "2026-04-10", amount: 500000, note: "new Behbood certificate", group_id: g });
+  DB.txns.push({ id: uid(), account_id: beh.id, kind: "transfer_in", date: "2026-04-10", amount: 500000, note: "new Behbood certificate", group_id: g });
+  tx(bank.id, "income", "2026-04-05", 250000, "salary");
+  tx(bank.id, "spend", "2026-04-25", 160000, "household");
+  tx(bank.id, "income", "2026-05-05", 250000, "salary");
+  tx(bank.id, "spend", "2026-05-24", 130000, "household");
+  tx(bank.id, "income", "2026-06-05", 250000, "salary");
+  tx(bank.id, "spend", "2026-06-21", 175000, "household");
+  DB.targets = { brokerage: 35, fixed_income: 45, bank: 15, cash: 5 };
+  localSave(); render(); toast("Sample data loaded — explore, then erase it in Settings");
+}
+
+/* ---------------- AI review prompt ---------------- */
+function copyAiPrompt() {
+  const series = netWorthSeries();
+  const lastD = latestSnapDate();
+  const lines = [];
+  lines.push("You are reviewing my personal finances (amounts in PKR). Give me a monthly review: what grew, what lagged, allocation drift vs targets, spending trend, and 3 concrete optimization suggestions. Note: general analysis only, not licensed financial advice.");
+  lines.push("\n## Net worth by month");
+  series.forEach(s => lines.push(`${s.date}: ${s.value}`));
+  lines.push("\n## Accounts (latest value, XIRR annualized)");
+  DB.accounts.filter(a => a.active !== false).forEach(a => {
+    const r = accountXirr(a.id);
+    lines.push(`${a.name} [${ACCT_TYPES[a.type].label}]: ${lastD ? valueAt(a.id, lastD) : "?"} | XIRR: ${r != null ? (r * 100).toFixed(1) + "%" : "n/a"}`);
+  });
+  const t = DB.targets || {};
+  if (Object.keys(t).length) {
+    lines.push("\n## Target allocation");
+    Object.entries(t).forEach(([k, v]) => lines.push(`${ACCT_TYPES[k].label}: ${v}%`));
+  }
+  const sp = monthlySpend();
+  if (sp.length) {
+    lines.push("\n## Monthly personal spending");
+    sp.forEach(s => lines.push(`${s.month}: ${s.value}`));
+  }
+  lines.push("\n## Recent ledger (last 25)");
+  [...DB.txns].sort((a, b) => a.date < b.date ? 1 : -1).slice(0, 25).forEach(tx =>
+    lines.push(`${tx.date} | ${acctName(tx.account_id)} | ${tx.kind} | ${tx.amount} | ${tx.note || ""}`));
+  navigator.clipboard.writeText(lines.join("\n"))
+    .then(() => toast("Copied — paste it to Claude for your review"))
+    .catch(() => toast("Copy failed — browser blocked clipboard"));
+}
+
+/* ---------------- password lock ---------------- */
+function renderLock(msg) {
+  document.getElementById("main").innerHTML = `
+    <div class="card" style="max-width:400px;margin:60px auto;text-align:center">
+      <div style="font-size:34px;margin-bottom:6px">🔒</div>
+      <h2 style="justify-content:center">R3d Funds is locked</h2>
+      <p class="muted">Enter your password to decrypt your data.</p>
+      ${msg ? `<p style="color:var(--down);font-weight:600;margin-top:6px">${msg}</p>` : ""}
+      <div style="margin-top:14px"><input type="password" id="lockPw" placeholder="Password" autofocus
+        onkeydown="if(event.key==='Enter')unlockApp()"></div>
+      <p style="margin-top:12px"><button class="btn" style="width:100%" onclick="unlockApp()">Unlock</button></p>
+      <p class="muted" style="margin-top:10px;font-size:11px">Forgot it? The data cannot be decrypted without it —
+      restore from a JSON backup instead.</p>
+    </div>`;
+  document.getElementById("nav").innerHTML = "";
+  document.getElementById("pageTitle").textContent = "Locked";
+  const pw = document.getElementById("lockPw"); if (pw) pw.focus();
+}
+async function unlockApp() {
+  const pw = document.getElementById("lockPw").value;
+  if (!pw) return;
+  try {
+    const key = await deriveKey(pw, cfg.lockSalt);
+    await decStr(key, cfg.lockCheck); // throws on wrong password
+    lockKey = key;
+    const parsed = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+    if (parsed.enc) DB = Object.assign({ accounts: [], txns: [], snapshots: [], targets: {} },
+      JSON.parse(await decStr(key, parsed)));
+    else { localLoad(); localSave(); } // first unlock after enabling: encrypt existing plain data
+    render();
+  } catch { renderLock("Wrong password"); }
+}
+async function setPassword() {
+  const p1 = document.getElementById("pwNew").value, p2 = document.getElementById("pwNew2").value;
+  if (!p1 || p1.length < 6) return toast("Use at least 6 characters");
+  if (p1 !== p2) return toast("Passwords don't match");
+  const salt = bufToB64(crypto.getRandomValues(new Uint8Array(16)));
+  const key = await deriveKey(p1, salt);
+  cfg.lockSalt = salt; cfg.lockCheck = await encStr(key, "myfunds-ok");
+  saveCfg(cfg); lockKey = key; localSave();
+  toast("Password set — data is now encrypted"); render();
+}
+async function changePassword() {
+  const oldPw = document.getElementById("pwOld").value;
+  const p1 = document.getElementById("pwNew").value, p2 = document.getElementById("pwNew2").value;
+  try { await decStr(await deriveKey(oldPw, cfg.lockSalt), cfg.lockCheck); }
+  catch { return toast("Current password is wrong"); }
+  if (!p1 || p1.length < 6) return toast("Use at least 6 characters");
+  if (p1 !== p2) return toast("New passwords don't match");
+  const salt = bufToB64(crypto.getRandomValues(new Uint8Array(16)));
+  const key = await deriveKey(p1, salt);
+  cfg.lockSalt = salt; cfg.lockCheck = await encStr(key, "myfunds-ok");
+  saveCfg(cfg); lockKey = key; localSave();
+  toast("Password changed"); render();
+}
+async function removePassword() {
+  const oldPw = document.getElementById("pwOld").value;
+  try { await decStr(await deriveKey(oldPw, cfg.lockSalt), cfg.lockCheck); }
+  catch { return toast("Current password is wrong"); }
+  if (!confirm("Remove the password? Data will be stored unencrypted on this device.")) return;
+  delete cfg.lockSalt; delete cfg.lockCheck; saveCfg(cfg);
+  lockKey = null; localSave();
+  toast("Password removed"); render();
+}
+function lockNow() { location.reload(); }
+
+/* ---------------- boot ---------------- */
+(async function boot() {
+  if (isCloud()) {
+    try {
+      await cloudInit();
+      if (supaUser) await cloudLoadAll();
+    } catch (e) {
+      toast("Cloud load failed: " + (e.message || e) + " — check Settings");
+    }
+    render(); return;
+  }
+  if (cfg.lockSalt && cfg.lockCheck) { renderNav(); renderLock(); return; }
+  localLoad();
+  render();
+})();
+</script>
+</body>
+</html>

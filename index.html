@@ -276,7 +276,7 @@ async function cloudLoadAll() {
   cloudIssues = [];
   const [a, t, s, g] = await Promise.all([
     supa.from("accounts").select("*").order("created_at"),
-    supa.from("transactions").select("*").order("date"),
+    supa.from("transactions").select("*").order("date").order("created_at"),
     supa.from("snapshots").select("*").order("date"),
     supa.from("settings").select("*"),
   ]);
@@ -445,6 +445,8 @@ function ledgerBalanceAt(accountId, date) {
 /* also reports whether an opening balance was actually known — without one the
    figure is just the net of flows, which is usually negative and meaningless */
 function ledgerBalanceInfo(accountId, date) {
+  /* stable sort by date keeps same-day rows in the order they were imported,
+     so per-row balances follow the bank statement's own sequence */
   const txns = DB.txns.filter(t => t.account_id === accountId && t.date <= date)
     .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
   if (!txns.length) return null;
@@ -1034,7 +1036,9 @@ function viewLedger() {
   /* list */
   const filterOpts = `<option value="">All accounts</option>` + DB.accounts
     .map(a => `<option value="${a.id}" ${ledgerFilter === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("");
-  let txns = [...DB.txns].sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
+  const ordAll = {}; DB.txns.forEach((t, i) => ordAll[t.id] = i);
+  let txns = [...DB.txns].sort((a, b) =>
+    a.date < b.date ? 1 : a.date > b.date ? -1 : ordAll[b.id] - ordAll[a.id]);
   if (ledgerFilter) txns = txns.filter(t => t.account_id === ledgerFilter);
   if (ledgerFrom) txns = txns.filter(t => t.date >= ledgerFrom);
   if (ledgerTo) txns = txns.filter(t => t.date <= ledgerTo);
@@ -1059,8 +1063,9 @@ function viewLedger() {
        figure stays true even while filtering, exactly like a bank statement. */
     let balMap = null, opening = 0;
     if (ledgerFilter) {
+      const ord = {}; DB.txns.forEach((t, i) => ord[t.id] = i);   // import order
       const all = DB.txns.filter(t => t.account_id === ledgerFilter)
-        .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+        .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : ord[a.id] - ord[b.id]);
       if (all.length) {
         const snapsBefore = DB.snapshots
           .filter(s => s.account_id === ledgerFilter && s.date <= all[0].date)
@@ -1253,20 +1258,14 @@ async function saveSnapshot() {
   const date = document.getElementById("snapDate").value;
   if (!date) return toast("Pick a date");
   const inputs = [...document.querySelectorAll(".snapVal")];
-  let n = 0;
+  let n = 0, err = "";
   for (const inp of inputs) {
     const v = parseFloat(inp.value);
     if (isNaN(v)) continue;
-    const acct = inp.getAttribute("data-acct");
-    const existing = DB.snapshots.find(s => s.date === date && s.account_id === acct);
-    if (existing) {
-      existing.value = v; await persistUpdate("snapshots", existing.id, { value: v });
-    } else {
-      const row = { id: uid(), date, account_id: acct, value: v };
-      DB.snapshots.push(row); await persistInsert("snapshots", row);
-    }
-    n++;
+    try { await upsertSnapshot(inp.getAttribute("data-acct"), date, v); n++; }
+    catch (e) { err = e.message || String(e); }
   }
+  if (err) { alert("Snapshot could not be saved:\n\n" + err); return; }
   toast(`Snapshot saved (${n} accounts)`); nav("Dashboard");
 }
 async function delSnapshot(date) {
@@ -1530,21 +1529,32 @@ function bankPreviewHtml() {
     <button class="btn" onclick="importBankRows()">Import these entries</button>
     <button class="btn secondary" onclick="bankRows=[];render()">Cancel</button></p>`;
 }
+/* Upsert a snapshot. Uses Supabase upsert on (user_id, account_id, date) so a row that
+   already exists in the cloud — but isn't in memory — updates instead of erroring. */
 async function upsertSnapshot(accountId, date, value) {
   const existing = DB.snapshots.find(s => s.date === date && s.account_id === accountId);
-  if (existing) { existing.value = value; await persistUpdate("snapshots", existing.id, { value }); }
-  else {
-    const row = { id: uid(), date, account_id: accountId, value };
-    DB.snapshots.push(row); await persistInsert("snapshots", row);
-  }
+  if (existing) existing.value = value;
+  else DB.snapshots.push({ id: uid(), date, account_id: accountId, value });
+  if (isCloud() && supaUser) {
+    const row = DB.snapshots.find(s => s.date === date && s.account_id === accountId);
+    const { error } = await supa.from("snapshots")
+      .upsert({ id: row.id, date, account_id: accountId, value, user_id: supaUser.id },
+              { onConflict: "user_id,account_id,date" });
+    if (error) throw new Error(error.message);
+  } else localSave();
 }
 async function importBankRows() {
   const acct = document.getElementById("bankAcct").value;
   if (!acct) return toast("Choose which account this statement belongs to");
-  let snaps = 0;
+  let snaps = 0, snapErr = "";
   const oc = document.getElementById("useOpening"), cc = document.getElementById("useClosing");
-  if (bankOpening && oc && oc.checked) { await upsertSnapshot(acct, dayBefore(bankOpening.date), bankOpening.value); snaps++; }
-  if (bankClosing && cc && cc.checked) { await upsertSnapshot(acct, bankClosing.date, bankClosing.value); snaps++; }
+  try {
+    if (bankOpening && oc && oc.checked) { await upsertSnapshot(acct, dayBefore(bankOpening.date), bankOpening.value); snaps++; }
+    if (bankClosing && cc && cc.checked) { await upsertSnapshot(acct, bankClosing.date, bankClosing.value); snaps++; }
+  } catch (e) {
+    snapErr = e.message || String(e);
+    console.error("snapshot save failed", e);
+  }
   let added = 0, skipped = 0, dupes = 0;
   /* Count-based duplicate check: if the statement has 3 identical rows and 2 are already
      stored, import 1 — genuine repeat charges survive, re-uploads don't double-count. */
@@ -1572,7 +1582,9 @@ async function importBankRows() {
   }
   if (!isCloud()) localSave();
   bankRows = []; bankOpening = null; bankClosing = null;
-  toast(`Imported ${added}${snaps ? `, ${snaps} balance snapshot${snaps > 1 ? "s" : ""}` : ""}` +
+  if (snapErr) alert("Transactions imported, but the opening/closing balance could NOT be saved:\n\n" + snapErr +
+    "\n\nAdd it manually on the Snapshot tab, or tell Claude this message.");
+  else toast(`Imported ${added}${snaps ? `, ${snaps} balance snapshot${snaps > 1 ? "s" : ""}` : ""}` +
     `${dupes ? `, ${dupes} duplicates ignored` : ""}${skipped ? `, ${skipped} skipped` : ""}`);
   nav("Ledger");
 }

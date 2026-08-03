@@ -226,7 +226,7 @@ function loadCfg() { try { return JSON.parse(localStorage.getItem(CFG_KEY)) || {
 function saveCfg(c) { localStorage.setItem(CFG_KEY, JSON.stringify(c)); }
 let cfg = loadCfg();
 
-let DB = { accounts: [], txns: [], snapshots: [], targets: {} };
+let DB = { accounts: [], txns: [], snapshots: [], targets: {}, importBatches: {} };
 let supa = null, supaUser = null;
 let lockKey = null; // in-memory AES key while unlocked
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
@@ -253,7 +253,7 @@ function localLoad() {
   try {
     const parsed = JSON.parse(localStorage.getItem(LS_KEY)) || {};
     if (parsed.enc) return; // encrypted — loaded at unlock instead
-    DB = Object.assign({ accounts: [], txns: [], snapshots: [], targets: {} }, parsed);
+    DB = Object.assign({ accounts: [], txns: [], snapshots: [], targets: {}, importBatches: {} }, parsed);
   }
   catch { /* corrupted -> start empty, never overwrite until next save */ }
 }
@@ -287,8 +287,11 @@ async function cloudLoadAll() {
   DB.accounts = note("accounts", a);
   DB.txns = note("transactions", t).map(r => ({ ...r, amount: Number(r.amount) }));
   DB.snapshots = note("snapshots", s).map(r => ({ ...r, value: Number(r.value) }));
-  DB.targets = {};
-  note("settings", g).forEach(r => { if (r.key === "targets") DB.targets = r.value || {}; });
+  DB.targets = {}; DB.importBatches = {};
+  note("settings", g).forEach(r => {
+    if (r.key === "targets") DB.targets = r.value || {};
+    if (r.key === "import_batches") DB.importBatches = r.value || {};
+  });
   if (cloudIssues.length) throw new Error(cloudIssues.join(" | "));
 }
 function cloudBanner() {
@@ -311,10 +314,30 @@ async function persistInsert(table, row) {
     if (error) { toast("Save failed: " + error.message); throw error; }
   } else localSave();
 }
+async function persistDeleteMany(table, ids) {
+  if (!ids.length) return;
+  if (isCloud() && supaUser) {
+    for (let i = 0; i < ids.length; i += 300) {
+      const chunk = ids.slice(i, i + 300);
+      const { error } = await supa.from(table).delete().in("id", chunk);
+      if (error) { toast("Delete failed: " + error.message); throw error; }
+    }
+  } else localSave();
+}
 async function persistDelete(table, id) {
   if (isCloud() && supaUser) {
     const { error } = await supa.from(table).delete().eq("id", id);
     if (error) { toast("Delete failed: " + error.message); throw error; }
+  } else localSave();
+}
+async function persistInsertMany(table, rows) {
+  if (!rows.length) return;
+  if (isCloud() && supaUser) {
+    for (let i = 0; i < rows.length; i += 300) {           // Supabase payload-size safety
+      const chunk = rows.slice(i, i + 300).map(r => ({ ...r, user_id: supaUser.id }));
+      const { error } = await supa.from(table).insert(chunk);
+      if (error) { toast("Save failed: " + error.message); throw error; }
+    }
   } else localSave();
 }
 async function persistUpdate(table, id, patch) {
@@ -327,6 +350,13 @@ async function persistTargets() {
   if (isCloud() && supaUser) {
     const { error } = await supa.from("settings")
       .upsert({ key: "targets", value: DB.targets, user_id: supaUser.id }, { onConflict: "user_id,key" });
+    if (error) toast("Save failed: " + error.message);
+  } else localSave();
+}
+async function persistImportBatches() {
+  if (isCloud() && supaUser) {
+    const { error } = await supa.from("settings")
+      .upsert({ key: "import_batches", value: DB.importBatches, user_id: supaUser.id }, { onConflict: "user_id,key" });
     if (error) toast("Save failed: " + error.message);
   } else localSave();
 }
@@ -1375,6 +1405,10 @@ function viewImport() {
     ${bankPreviewHtml()}`}
   </div>
 
+  ${importBatchesHtml()}
+  ${duplicateCleanupHtml()}
+  ${wipeAccountHtml()}
+
   <div class="card"><h2>Import history — monthly valuations</h2>
     <p class="muted">Paste rows from your Google Sheet as CSV: <code>date, account name, value</code> —
     one row per account per month. Dates like 2025-01-31 or 31/01/2025. Accounts are created automatically
@@ -1420,6 +1454,132 @@ function parseDateCell(s) {
 
 /* ---- bank statement import ---- */
 let bankRows = [], bankFileName = "", bankOpening = null, bankClosing = null;
+let dupScope = "", dupScan = null;
+
+/* An identical account+type+date+amount+note is treated as one logical entry — for
+   transfers, both legs are grouped and removed together so pairing never breaks. */
+function findDuplicateTxns(scopeAccountId) {
+  const scope = DB.txns.filter(t => !scopeAccountId || t.account_id === scopeAccountId);
+  const seenGroups = new Set();
+  const logical = [];
+  for (const t of scope) {
+    if (t.group_id) {
+      if (seenGroups.has(t.group_id)) continue;
+      seenGroups.add(t.group_id);
+      const pair = DB.txns.filter(x => x.group_id === t.group_id);
+      const accts = pair.map(p => p.account_id).sort().join(",");
+      logical.push({ key: `xfer|${accts}|${t.date}|${Math.round(t.amount * 100)}|${(t.note || "").trim()}`,
+        ids: pair.map(p => p.id), label: `Transfer ${fmtRs(t.amount)} · ${t.date} · ${(t.note || "no note").slice(0, 60)}` });
+    } else {
+      logical.push({ key: `${t.account_id}|${t.kind}|${t.date}|${Math.round(t.amount * 100)}|${(t.note || "").trim()}`,
+        ids: [t.id], label: `${TXN_KINDS[t.kind].label.split(" ")[0]} ${fmtRs(t.amount)} · ${t.date} · ${(t.note || "no note").slice(0, 60)}` });
+    }
+  }
+  const groups = {};
+  logical.forEach(l => (groups[l.key] ||= []).push(l));
+  const toDelete = [], examples = [];
+  for (const key in groups) {
+    const arr = groups[key];
+    if (arr.length > 1) {
+      for (let i = 1; i < arr.length; i++) toDelete.push(...arr[i].ids);
+      if (examples.length < 8) examples.push({ label: arr[0].label, count: arr.length });
+    }
+  }
+  return { toDelete, examples, groupsAffected: Object.values(groups).filter(a => a.length > 1).length };
+}
+function importBatchesHtml() {
+  const ids = Object.keys(DB.importBatches || {});
+  if (!ids.length) return "";
+  const rows = ids.sort((a, b) => (DB.importBatches[b].importedAt || "").localeCompare(DB.importBatches[a].importedAt || ""))
+    .map(id => {
+      const b = DB.importBatches[id];
+      const stillThere = DB.txns.filter(t => t.import_batch === id).length;
+      return `<tr><td>${esc(b.fileName || "CSV import")}</td><td>${esc(acctName(b.accountId))}</td>
+        <td>${b.importedAt || ""}</td><td class="num">${stillThere}${stillThere !== b.count ? ` / ${b.count}` : ""}</td>
+        <td><button class="btn danger" style="padding:3px 10px;font-size:12px" onclick="deleteImportBatch('${id}')">Delete this import</button></td></tr>`;
+    }).join("");
+  return `<div class="card"><h2>Your imports <span class="sub">delete just one upload</span></h2>
+    <p class="muted">Each CSV upload is tracked here. Deleting one removes only the entries it added — anything you
+    edited or added by hand stays. Opening/closing snapshots from that import are NOT removed automatically (edit
+    them on the Snapshot tab if needed).</p>
+    <table><thead><tr><th>File</th><th>Account</th><th>Imported</th><th class="num">Entries</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+async function deleteImportBatch(id) {
+  const b = DB.importBatches[id]; if (!b) return;
+  const mine = DB.txns.filter(t => t.import_batch === id);
+  if (!confirm(`Delete the ${mine.length} entries imported from "${b.fileName || "this CSV"}" (${acctName(b.accountId)}, ${b.importedAt})? Snapshots are kept.`)) return;
+  const ids = new Set();
+  mine.forEach(t => {
+    ids.add(t.id);
+    if (t.group_id) DB.txns.filter(x => x.group_id === t.group_id).forEach(p => ids.add(p.id));
+  });
+  DB.txns = DB.txns.filter(t => !ids.has(t.id));
+  await persistDeleteMany("transactions", [...ids]);
+  delete DB.importBatches[id];
+  await persistImportBatches();
+  toast(`Deleted ${ids.size} entries from that import`); nav("Ledger");
+}
+function duplicateCleanupHtml() {
+  const accOpts = `<option value="">All accounts</option>` + DB.accounts.map(a =>
+    `<option value="${a.id}" ${dupScope === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("");
+  let body = `<div class="row" style="align-items:flex-end">
+    <div style="max-width:260px"><label>Account</label>
+      <select onchange="dupScope=this.value;dupScan=null;render()">${accOpts}</select></div>
+    <div><button class="btn secondary" onclick="scanDuplicates()">Scan for duplicates</button></div></div>`;
+  if (dupScan) {
+    if (!dupScan.toDelete.length)
+      body += `<p class="muted" style="margin-top:10px">No duplicates found. ✓</p>`;
+    else
+      body += `<p style="margin-top:10px"><strong style="color:var(--down)">${dupScan.toDelete.length}</strong>
+        duplicate ${dupScan.toDelete.length === 1 ? "entry" : "entries"} found across
+        ${dupScan.groupsAffected} repeated item${dupScan.groupsAffected === 1 ? "" : "s"}:</p>
+      <table><tbody>${dupScan.examples.map(e => `<tr><td>${esc(e.label)}</td>
+        <td class="num muted">×${e.count} → keeping 1</td></tr>`).join("")}
+        ${dupScan.groupsAffected > dupScan.examples.length ? `<tr><td class="muted">…and ${dupScan.groupsAffected - dupScan.examples.length} more</td><td></td></tr>` : ""}
+      </tbody></table>
+      <p style="margin-top:12px"><button class="btn danger" onclick="removeDuplicates()">Remove ${dupScan.toDelete.length} duplicate entries</button></p>`;
+  }
+  return `<div class="card"><h2>Clean up duplicate entries <span class="sub">if an import ran twice</span></h2>
+    <p class="muted">Finds entries with the exact same account, type, date, amount and note, and keeps only one of
+    each — useful if a slow import got submitted twice. Nothing is touched until you press Remove.</p>${body}</div>`;
+}
+async function scanDuplicates() { dupScan = findDuplicateTxns(dupScope || null); render(); }
+async function removeDuplicates() {
+  if (!dupScan || !dupScan.toDelete.length) return;
+  if (!confirm(`Delete ${dupScan.toDelete.length} duplicate entries? Consider Import → Download backup first if unsure.`)) return;
+  const ids = new Set(dupScan.toDelete);
+  DB.txns = DB.txns.filter(t => !ids.has(t.id));
+  await persistDeleteMany("transactions", dupScan.toDelete);
+  dupScan = null; toast(`Removed ${ids.size} duplicates`); nav("Ledger");
+}
+
+function wipeAccountHtml() {
+  if (!DB.accounts.length) return "";
+  const accOpts = DB.accounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join("");
+  return `<div class="card"><h2>Redo an import from scratch <span class="sub">danger zone</span></h2>
+    <p class="muted">If a whole import looks wrong, wipe every ledger entry for one account and re-upload the CSV.
+    Monthly snapshots for that account are kept.</p>
+    <div class="row" style="align-items:flex-end">
+      <div style="max-width:280px"><label>Account</label><select id="wipeAcct">${accOpts}</select></div>
+      <div><button class="btn danger" onclick="wipeAccountLedger()">Delete all ledger entries for this account</button></div>
+    </div></div>`;
+}
+async function wipeAccountLedger() {
+  const acct = document.getElementById("wipeAcct").value;
+  const mine = DB.txns.filter(t => t.account_id === acct);
+  if (!mine.length) return toast("No entries for this account");
+  if (!confirm(`Delete all ${mine.length} ledger entries for ${acctName(acct)}? Snapshots stay. ` +
+    `This cannot be undone — consider Import → Download backup first.`)) return;
+  const ids = new Set();
+  mine.forEach(t => {
+    ids.add(t.id);
+    if (t.group_id) DB.txns.filter(x => x.group_id === t.group_id).forEach(p => ids.add(p.id));
+  });
+  DB.txns = DB.txns.filter(t => !ids.has(t.id));
+  await persistDeleteMany("transactions", [...ids]);
+  toast(`Deleted ${ids.size} entries`); nav("Ledger");
+}
 const dayBefore = iso => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() - 1); return isoDate(d); };
 function splitCsvLine(line) {
   const out = []; let cur = "", q = false;
@@ -1485,7 +1645,8 @@ function parseBankCsv(text) {
     }
     if (isNaN(amt) || amt === 0) continue;
     bankRows.push({ date, amount: amt, kind,
-      note: (ci.desc >= 0 ? r[ci.desc] : "").replace(/\s+/g, " ").slice(0, 120) });
+      note: (ci.desc >= 0 ? r[ci.desc] : "").replace(/\s+/g, " ").slice(0, 120),
+      statementBalance: isNaN(bal) ? null : bal });
   }
   bankRows.sort((a, b) => a.date < b.date ? -1 : 1);
 }
@@ -1511,14 +1672,26 @@ function bankPreviewHtml() {
     });
     return o;
   };
-  const rows = bankRows.map((r, i) => `<tr>
+  /* re-derive a running balance from opening + this preview's own rows in order, so it can be
+     checked against each row's own statement balance — catches a mis-parsed row before saving */
+  let runningBal = bankOpening ? bankOpening.value : null;
+  const hasStatementBal = bankRows.some(r => r.statementBalance != null);
+  const rows = bankRows.map((r, i) => {
+    if (runningBal != null) runningBal += (r.kind === "income" ? 1 : r.kind === "spend" ? -1
+      : r.kind.startsWith("xin") ? 1 : r.kind.startsWith("xout") ? -1 : 0) * r.amount;
+    const mismatch = runningBal != null && r.statementBalance != null &&
+      Math.abs(runningBal - r.statementBalance) > 1;
+    return `<tr>
     <td>${r.date}</td>
     <td class="num">${fmtRs(r.amount)}</td>
+    ${hasStatementBal ? `<td class="num ${mismatch ? "delta-down" : "muted"}" title="${mismatch ? "Doesn't match this row's own statement balance — check the row above" : "Running balance, matches statement"}">
+      ${r.statementBalance != null ? fmtRs(r.statementBalance) : "—"}${mismatch ? " ⚠" : ""}</td>` : ""}
     <td><select style="padding:4px 6px;font-size:12px" onchange="setBankKind(${i},this.value)">${opts(i)}</select></td>
     <td><input style="padding:4px 8px;font-size:12px;min-width:130px" list="dlBankCat"
       value="${esc(r.category || "")}" placeholder="category" oninput="setBankCat(${i},this.value)"></td>
     <td><input style="padding:4px 8px;font-size:12px" value="${esc(r.note)}" oninput="setBankNote(${i},this.value)"></td>
-  </tr>`).join("");
+  </tr>`;
+  }).join("");
   const allSuggestions = [...new Set([...CATS.spend, ...CATS.income, ...allCats()])].sort();
   const snapBox = (bankOpening || bankClosing) ? `
     <div class="card" style="margin:10px 0 0;border-color:var(--accent)">
@@ -1550,11 +1723,14 @@ function bankPreviewHtml() {
       <input list="dlBankCat" placeholder="e.g. Salary" onchange="bulkBankCat('income',this.value)"></div>
   </div>
   <div style="max-height:420px;overflow:auto;margin-top:8px">
-  <table><thead><tr><th>Date</th><th class="num">Amount</th><th style="width:210px">Type</th>
-    <th style="width:150px">Category</th><th>Note</th></tr></thead>
+  <table><thead><tr><th>Date</th><th class="num">Amount</th>
+    ${hasStatementBal ? `<th class="num">Balance</th>` : ""}
+    <th style="width:210px">Type</th><th style="width:150px">Category</th><th>Note</th></tr></thead>
   <tbody>${rows}</tbody></table></div>
+  ${hasStatementBal ? `<p class="muted" style="margin-top:6px">Balance is your statement's own running total for
+    that row — a ⚠ means it doesn't match the row above, usually a missed or extra row nearby.</p>` : ""}
   <p style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-    <button class="btn" onclick="importBankRows()">Import these entries</button>
+    <button class="btn" id="bankImportBtn" onclick="importBankRows()">Import these entries</button>
     <button class="btn secondary" onclick="bankRows=[];render()">Cancel</button></p>`;
 }
 /* Upsert a snapshot. Uses Supabase upsert on (user_id, account_id, date) so a row that
@@ -1571,50 +1747,65 @@ async function upsertSnapshot(accountId, date, value) {
     if (error) throw new Error(error.message);
   } else localSave();
 }
+let bankImporting = false;
 async function importBankRows() {
+  if (bankImporting) return;   // guards against a double-click firing two overlapping imports
   const acct = document.getElementById("bankAcct").value;
   if (!acct) return toast("Choose which account this statement belongs to");
-  let snaps = 0, snapErr = "";
-  const oc = document.getElementById("useOpening"), cc = document.getElementById("useClosing");
+  bankImporting = true;
+  const btn = document.getElementById("bankImportBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Importing…"; }
   try {
-    if (bankOpening && oc && oc.checked) { await upsertSnapshot(acct, dayBefore(bankOpening.date), bankOpening.value); snaps++; }
-    if (bankClosing && cc && cc.checked) { await upsertSnapshot(acct, bankClosing.date, bankClosing.value); snaps++; }
-  } catch (e) {
-    snapErr = e.message || String(e);
-    console.error("snapshot save failed", e);
-  }
-  let added = 0, skipped = 0, dupes = 0;
-  /* Count-based duplicate check: if the statement has 3 identical rows and 2 are already
-     stored, import 1 — genuine repeat charges survive, re-uploads don't double-count. */
-  const sig = t => `${t.date}|${Math.round(t.amount * 100)}|${(t.note || "").trim()}`;
-  const have = {};
-  DB.txns.filter(t => t.account_id === acct).forEach(t => { const k = sig(t); have[k] = (have[k] || 0) + 1; });
-  for (const r of bankRows) {
-    if (r.kind === "skip") { skipped++; continue; }
-    const k = sig(r);
-    if (have[k]) { have[k]--; dupes++; continue; }
-    if (r.kind === "income" || r.kind === "spend") {
-      const row = { id: uid(), account_id: acct, kind: r.kind, date: r.date, amount: r.amount,
-        note: r.note || null, category: r.category || null };
-      DB.txns.push(row); await persistInsert("transactions", row); added++;
-    } else {
-      const [dir, other] = r.kind.split(":");
-      const g = uid();
-      const mine = { id: uid(), account_id: acct, kind: dir === "xout" ? "transfer_out" : "transfer_in",
-        date: r.date, amount: r.amount, note: r.note || null, category: r.category || null, group_id: g };
-      const theirs = { id: uid(), account_id: other, kind: dir === "xout" ? "transfer_in" : "transfer_out",
-        date: r.date, amount: r.amount, note: r.note || null, category: r.category || null, group_id: g };
-      DB.txns.push(mine, theirs);
-      await persistInsert("transactions", mine); await persistInsert("transactions", theirs); added++;
+    let snaps = 0, snapErr = "";
+    const oc = document.getElementById("useOpening"), cc = document.getElementById("useClosing");
+    try {
+      if (bankOpening && oc && oc.checked) { await upsertSnapshot(acct, dayBefore(bankOpening.date), bankOpening.value); snaps++; }
+      if (bankClosing && cc && cc.checked) { await upsertSnapshot(acct, bankClosing.date, bankClosing.value); snaps++; }
+    } catch (e) {
+      snapErr = e.message || String(e);
+      console.error("snapshot save failed", e);
     }
+    let added = 0, skipped = 0, dupes = 0;
+    /* Count-based duplicate check: if the statement has 3 identical rows and 2 are already
+       stored, import 1 — genuine repeat charges survive, re-uploads don't double-count. */
+    const sig = t => `${t.date}|${Math.round(t.amount * 100)}|${(t.note || "").trim()}`;
+    const have = {};
+    DB.txns.filter(t => t.account_id === acct).forEach(t => { const k = sig(t); have[k] = (have[k] || 0) + 1; });
+    const toInsert = [];
+    const batchId = uid();
+    for (const r of bankRows) {
+      if (r.kind === "skip") { skipped++; continue; }
+      const k = sig(r);
+      if (have[k]) { have[k]--; dupes++; continue; }
+      if (r.kind === "income" || r.kind === "spend") {
+        const row = { id: uid(), account_id: acct, kind: r.kind, date: r.date, amount: r.amount,
+          note: r.note || null, category: r.category || null, import_batch: batchId };
+        DB.txns.push(row); toInsert.push(row); added++;
+      } else {
+        const [dir, other] = r.kind.split(":");
+        const g = uid();
+        const mine = { id: uid(), account_id: acct, kind: dir === "xout" ? "transfer_out" : "transfer_in",
+          date: r.date, amount: r.amount, note: r.note || null, category: r.category || null, group_id: g, import_batch: batchId };
+        const theirs = { id: uid(), account_id: other, kind: dir === "xout" ? "transfer_in" : "transfer_out",
+          date: r.date, amount: r.amount, note: r.note || null, category: r.category || null, group_id: g, import_batch: batchId };
+        DB.txns.push(mine, theirs); toInsert.push(mine, theirs); added++;
+      }
+    }
+    if (isCloud() && supaUser) await persistInsertMany("transactions", toInsert);
+    else localSave();
+    if (added > 0) {
+      DB.importBatches[batchId] = { fileName: bankFileName, accountId: acct, importedAt: today(), count: added };
+      await persistImportBatches();
+    }
+    bankRows = []; bankOpening = null; bankClosing = null;
+    if (snapErr) alert("Transactions imported, but the opening/closing balance could NOT be saved:\n\n" + snapErr +
+      "\n\nAdd it manually on the Snapshot tab, or tell Claude this message.");
+    else toast(`Imported ${added}${snaps ? `, ${snaps} balance snapshot${snaps > 1 ? "s" : ""}` : ""}` +
+      `${dupes ? `, ${dupes} duplicates ignored` : ""}${skipped ? `, ${skipped} skipped` : ""}`);
+    nav("Ledger");
+  } finally {
+    bankImporting = false;
   }
-  if (!isCloud()) localSave();
-  bankRows = []; bankOpening = null; bankClosing = null;
-  if (snapErr) alert("Transactions imported, but the opening/closing balance could NOT be saved:\n\n" + snapErr +
-    "\n\nAdd it manually on the Snapshot tab, or tell Claude this message.");
-  else toast(`Imported ${added}${snaps ? `, ${snaps} balance snapshot${snaps > 1 ? "s" : ""}` : ""}` +
-    `${dupes ? `, ${dupes} duplicates ignored` : ""}${skipped ? `, ${skipped} skipped` : ""}`);
-  nav("Ledger");
 }
 function parseAmountCell(s) { return parseFloat(String(s).replace(/[Rs,\s"]/gi, "")); }
 async function findOrCreateAccount(name) {
@@ -1674,7 +1865,7 @@ function importJson(ev) {
       const data = JSON.parse(rd.result);
       if (!data.accounts) throw new Error("not a R3d Funds backup");
       if (!confirm(`Restore ${data.accounts.length} accounts, ${(data.txns || []).length} transactions, ${(data.snapshots || []).length} snapshots? This replaces current local data.`)) return;
-      DB = Object.assign({ accounts: [], txns: [], snapshots: [], targets: {} }, data);
+      DB = Object.assign({ accounts: [], txns: [], snapshots: [], targets: {}, importBatches: {} }, data);
       if (isCloud() && supaUser) {
         toast("Backup loaded — pushing to cloud…");
         for (const a of DB.accounts) await persistInsert("accounts", a).catch(() => {});
@@ -1943,7 +2134,7 @@ async function unlockApp() {
     await decStr(key, cfg.lockCheck); // throws on wrong password
     lockKey = key;
     const parsed = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
-    if (parsed.enc) DB = Object.assign({ accounts: [], txns: [], snapshots: [], targets: {} },
+    if (parsed.enc) DB = Object.assign({ accounts: [], txns: [], snapshots: [], targets: {}, importBatches: {} },
       JSON.parse(await decStr(key, parsed)));
     else { localLoad(); localSave(); } // first unlock after enabling: encrypt existing plain data
     render();

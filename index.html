@@ -24,6 +24,7 @@
   --s5: #4a3aa7; /* violet- business */
   --s6: #eb6834; /* orange- property */
   --s7: #e87ba4; /* magenta-other */
+  --s8: #a52322; /* deep red - liabilities */
   --seq: #2a78d6;
   --accent: #2a78d6;
   --card-r: 12px;
@@ -47,6 +48,7 @@
     --s5: #9085e9;
     --s6: #d95926;
     --s7: #d55181;
+    --s8: #c96a69;
     --seq: #3987e5;
     --accent: #3987e5;
   }
@@ -210,7 +212,12 @@ const ACCT_TYPES = {
   business:    { label: "Business",     color: "var(--s5)" },
   property:    { label: "Property",     color: "var(--s6)" },
   other:       { label: "Other",        color: "var(--s7)" },
+  liability:   { label: "Liability",    color: "var(--s8)" },
 };
+/* what counts toward zakat by default — you can override per account */
+const ZAKAT_DEFAULT = { bank: true, cash: true, brokerage: true, fixed_income: true,
+  business: true, other: true, property: false, liability: false };
+const zakatIncluded = a => a.zakat_include == null ? !!ZAKAT_DEFAULT[a.type] : !!a.zakat_include;
 const TXN_KINDS = {
   income:       { label: "Add (deposit from outside)", sign: +1, external: true },
   spend:        { label: "Withdraw (spending)",        sign: -1, external: true },
@@ -506,7 +513,9 @@ function ledgerBalanceInfo(accountId, date) {
   const txns = DB.txns.filter(t => t.account_id === accountId && t.date <= date)
     .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
   if (!txns.length) return null;
-  const before = DB.snapshots.filter(s => s.account_id === accountId && s.date <= txns[0].date)
+  /* strictly BEFORE the first entry: a snapshot on the same date is an end-of-day figure that
+     already includes that day's entries, so treating it as opening would double-count them */
+  const before = DB.snapshots.filter(s => s.account_id === accountId && s.date < txns[0].date)
     .sort((a, b) => a.date < b.date ? -1 : 1);
   const hasOpening = before.length > 0;
   const opening = hasOpening ? before[before.length - 1].value : 0;
@@ -532,7 +541,7 @@ function monthlySpend(n = 12) {
 }
 
 /* ---------------- UI plumbing ---------------- */
-const VIEWS = ["Dashboard", "Review", "Ledger", "Snapshot", "Accounts", "Import", "Settings"];
+const VIEWS = ["Dashboard", "Review", "Ledger", "Snapshot", "Zakat", "Accounts", "Import", "Settings"];
 let currentView = "Dashboard";
 let ledgerFilter = null; // account id
 let ledgerSearch = "";   // free-text filter: note, amount, or date
@@ -568,7 +577,7 @@ function toast(msg) {
   clearTimeout(el._t); el._t = setTimeout(() => el.style.display = "none", 2600);
 }
 function nav(v) { currentView = v; render(); }
-const NAV_ICONS = { Dashboard: "▦", Review: "☰", Ledger: "⇄", Snapshot: "◔", Accounts: "▤", Import: "⤓", Settings: "⚙" };
+const NAV_ICONS = { Dashboard: "▦", Review: "☰", Ledger: "⇄", Snapshot: "◔", Zakat: "◈", Accounts: "▤", Import: "⤓", Settings: "⚙" };
 function renderNav() {
   document.getElementById("nav").innerHTML = VIEWS.map(v =>
     `<button class="navitem ${v === currentView ? "active" : ""}" onclick="nav('${v}')">
@@ -586,6 +595,7 @@ function render() {
   switch (currentView) {
     case "Dashboard": m.innerHTML = viewDashboard(); attachChartHovers(); break;
     case "Review": m.innerHTML = viewReview(); break;
+    case "Zakat": m.innerHTML = viewZakat(); break;
     case "Ledger": m.innerHTML = viewLedger(); break;
     case "Snapshot": m.innerHTML = viewSnapshot(); break;
     case "Accounts": m.innerHTML = viewAccounts(); break;
@@ -863,6 +873,147 @@ function viewReview() {
     </div>`;
 }
 
+/* ---------------- Zakat ---------------- */
+let zakatDate = "", zakatRate = "2.5", zakatExclude = {};
+
+function zakatAccount() {
+  return DB.accounts.find(a => a.type === "liability" && /zakat/i.test(a.name)) || null;
+}
+function zakatOutstanding() {
+  const za = zakatAccount(); if (!za) return 0;
+  const bal = ledgerBalanceAt(za.id, "9999-12-31");
+  return bal == null ? 0 : bal;   // stored negative; -50,000 means 50,000 still owed
+}
+function viewZakat() {
+  if (!DB.accounts.length)
+    return `<div class="card"><div class="empty">Add your accounts first.</div></div>`;
+  const d = zakatDate || today();
+  const rate = parseFloat(zakatRate) || 0;
+  const za = zakatAccount();
+
+  /* --- what's zakatable on that date --- */
+  let rows = "", total = 0;
+  for (const a of DB.accounts.filter(a => a.active !== false && a.type !== "liability")) {
+    const v = valueAt(a.id, d);
+    const inc = zakatExclude[a.id] != null ? !zakatExclude[a.id] : zakatIncluded(a);
+    if (inc && v != null && v > 0) total += v;
+    rows += `<tr>
+      <td><label style="display:flex;gap:8px;align-items:center;font-weight:500;cursor:pointer">
+        <input type="checkbox" style="width:auto" ${inc ? "checked" : ""}
+          onchange="zakatExclude['${a.id}']=!this.checked;render()">
+        <span class="chip" style="background:${ACCT_TYPES[a.type].color}"></span>${esc(a.name)}</label></td>
+      <td><span class="tag">${ACCT_TYPES[a.type].label}</span></td>
+      <td class="num ${inc ? "" : "muted"}">${v != null ? fmtRs(v) : "—"}</td></tr>`;
+  }
+  const due = Math.round(total * rate / 100);
+
+  /* --- history from the ledger --- */
+  let histRows = "", accrued = 0, paid = 0;
+  if (za) {
+    const mine = DB.txns.filter(t => t.account_id === za.id)
+      .sort((a, b) => a.date < b.date ? 1 : -1);
+    mine.forEach(t => {
+      const isAccrual = t.kind === "spend";
+      if (isAccrual) accrued += t.amount; else paid += t.amount;
+      histRows += `<tr><td>${t.date}</td>
+        <td><span class="kindpill">${isAccrual ? "Zakat due" : "Paid"}</span></td>
+        <td class="num ${isAccrual ? "delta-down" : "delta-up"}">${isAccrual ? "−" : "+"}${fmtRs(t.amount).replace("Rs ", "")}</td>
+        <td class="muted">${esc(t.note || "")}</td></tr>`;
+    });
+  }
+  const outstanding = Math.abs(zakatOutstanding());
+  const payAccts = DB.accounts.filter(a => a.active !== false && a.type !== "liability")
+    .map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join("");
+
+  return `<div class="grid3">
+    <div class="card"><h2>Zakat outstanding</h2>
+      <div class="hero-value ${outstanding > 0 ? "delta-down" : "delta-up"}">${fmtRs(outstanding)}</div>
+      <div class="hero-sub muted">${outstanding > 0 ? "still to be paid" : "nothing outstanding ✓"}</div></div>
+    <div class="card"><h2>Total assessed</h2>
+      <div class="hero-value">${fmtRs(accrued)}</div>
+      <div class="hero-sub muted">across all years recorded</div></div>
+    <div class="card"><h2>Total paid</h2>
+      <div class="hero-value delta-up">${fmtRs(paid)}</div>
+      <div class="hero-sub muted">${accrued ? Math.round(paid / accrued * 100) + "% of assessed" : "—"}</div></div>
+  </div>
+
+  <div class="card"><h2>Calculate zakat <span class="sub">on your wealth at a chosen date</span></h2>
+    <div class="row" style="align-items:flex-end">
+      <div style="max-width:190px"><label>Valuation date (e.g. 1 Ramadan)</label>
+        <input type="date" value="${d}" onchange="zakatDate=this.value;render()"></div>
+      <div style="max-width:130px"><label>Rate %</label>
+        <input type="number" step="0.001" value="${esc(zakatRate)}" onchange="zakatRate=this.value;render()"></div>
+      <div class="muted" style="font-size:12px">2.5% is the common lunar-year rate; some use 2.577% for a solar year.
+        Tick the accounts your zakat applies to — follow your own scholar's guidance.</div>
+    </div>
+    <table style="margin-top:12px"><thead><tr><th>Account</th><th>Type</th><th class="num">Value on ${d}</th></tr></thead>
+      <tbody>${rows}
+      <tr style="font-weight:700"><td colspan="2">Zakatable wealth</td><td class="num">${fmtRs(total)}</td></tr>
+      <tr style="font-weight:700"><td colspan="2">Zakat @ ${rate}%</td><td class="num delta-down">${fmtRs(due)}</td></tr>
+      </tbody></table>
+    <p style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="btn" onclick="recordZakat(${due},'${d}')" ${due > 0 ? "" : "disabled"}>Record Rs ${due.toLocaleString("en-PK")} as payable</button>
+      <span class="muted" style="font-size:12px">Creates a “Zakat payable” liability — your net worth drops by this amount.</span></p>
+    ${total === 0 ? `<p class="muted" style="margin-top:6px">No values on that date — record a snapshot for that date first.</p>` : ""}
+  </div>
+
+  ${za ? `<div class="card"><h2>Record a payment <span class="sub">as you pay it out over the year</span></h2>
+    <div class="row" style="align-items:flex-end">
+      <div style="max-width:240px"><label>Paid from</label><select id="zkFrom">${payAccts}</select></div>
+      <div style="max-width:150px"><label>Date</label><input type="date" id="zkDate" value="${today()}"></div>
+      <div style="max-width:170px"><label>Amount (Rs)</label><input type="number" step="any" id="zkAmt" placeholder="50000"></div>
+      <div style="max-width:220px"><label>Note</label><input id="zkNote" placeholder="e.g. to Edhi / relative"></div>
+      <div><button class="btn" onclick="recordZakatPayment()">Add payment</button></div>
+    </div>
+    <p class="muted" style="margin-top:8px">Money leaves the account and reduces what you owe — your net worth
+      doesn't change, because the obligation was already counted when you recorded it.</p></div>` : ""}
+
+  ${histRows ? `<div class="card"><h2>Zakat history</h2>
+    <table><thead><tr><th>Date</th><th>Type</th><th class="num">Amount</th><th>Note</th></tr></thead>
+    <tbody>${histRows}</tbody></table></div>` : ""}`;
+}
+
+async function recordZakat(amount, date) {
+  if (!amount || amount <= 0) return toast("Nothing to record");
+  if (!confirm(`Record ${fmtRs(amount)} as zakat payable on ${date}?\n\nYour net worth will drop by this amount.`)) return;
+  let za = zakatAccount();
+  if (!za) {
+    za = { id: uid(), name: "Zakat payable", type: "liability", active: true, zakat_include: false };
+    DB.accounts.push(za); await persistInsert("accounts", za);
+  }
+  const row = { id: uid(), account_id: za.id, kind: "spend", date, amount,
+    note: `Zakat assessed on ${date}`, category: "Zakat assessed" };
+  DB.txns.push(row); await persistInsert("transactions", row);
+  /* a liability's balance is exactly known, so snapshot it straight away —
+     that's what makes net worth reflect it */
+  try { await upsertSnapshot(za.id, date, ledgerBalanceAt(za.id, date)); }
+  catch (e) { alert("Recorded, but the snapshot failed:\n\n" + e.message); }
+  if (!isCloud()) localSave();
+  toast(`Zakat of ${fmtRs(amount)} recorded`); render();
+}
+
+async function recordZakatPayment() {
+  const za = zakatAccount(); if (!za) return;
+  const amt = parseFloat(document.getElementById("zkAmt").value);
+  if (!amt || amt <= 0) return toast("Enter an amount");
+  const from = document.getElementById("zkFrom").value;
+  const date = document.getElementById("zkDate").value;
+  const note = document.getElementById("zkNote").value || "Zakat payment";
+  const g = uid();
+  const out = { id: uid(), account_id: from, kind: "transfer_out", date, amount: amt,
+    note, category: "Charity / Zakat", group_id: g };
+  const into = { id: uid(), account_id: za.id, kind: "transfer_in", date, amount: amt,
+    note, category: "Charity / Zakat", group_id: g };
+  DB.txns.push(out, into);
+  await persistInsert("transactions", out); await persistInsert("transactions", into);
+  /* deliberately no snapshot here: a payment moves TWO accounts (bank down, liability down).
+     Snapshotting only the liability would inflate net worth until the next real snapshot,
+     so both are captured at the next month-end instead. Outstanding zakat below is read
+     from the ledger, so it updates immediately regardless. */
+  if (!isCloud()) localSave();
+  toast(`Payment of ${fmtRs(amt)} recorded`); render();
+}
+
 /* ---------------- charts (hand-rolled SVG) ---------------- */
 function lineChart(series) {
   const W = 900, H = 260, P = { l: 60, r: 16, t: 14, b: 30 };
@@ -1126,7 +1277,7 @@ function viewLedger() {
         .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : ord[a.id] - ord[b.id]);
       if (all.length) {
         const snapsBefore = DB.snapshots
-          .filter(s => s.account_id === ledgerFilter && s.date <= all[0].date)
+          .filter(s => s.account_id === ledgerFilter && s.date < all[0].date)
           .sort((a, b) => a.date < b.date ? -1 : 1);
         opening = snapsBefore.length ? snapsBefore[snapsBefore.length - 1].value : 0;
       }
@@ -1385,8 +1536,12 @@ function openAccountEdit(id) {
   dlg.innerHTML = `<h2 style="font-size:15px;margin-bottom:4px">Edit account</h2>
     <label>Name</label><input id="edAcN" value="${esc(a.name)}">
     <label>Type</label><select id="edAcT">${typeOpts}</select>
-    <p class="muted" style="margin-top:8px">Changing type affects allocation and whether this account's Return (XIRR)
-    is shown — only Stocks/Fixed income/Business/Property/Other are treated as investments.</p>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:12px;cursor:pointer">
+      <input type="checkbox" id="edAcZ" style="width:auto" ${zakatIncluded(a) ? "checked" : ""}>
+      Include in zakat calculation</label>
+    <p class="muted" style="margin-top:8px">Type affects allocation and whether Return (XIRR) is shown — only
+    Stocks/Fixed income/Business/Property/Other count as investments. <strong>Liability</strong> is for things you owe
+    (like zakat payable) and is subtracted from net worth.</p>
     <p style="margin-top:14px;display:flex;gap:8px">
       <button class="btn" onclick="saveAccountEdit('${a.id}')">Save</button>
       <button class="btn secondary" onclick="document.getElementById('acctDlg').close()">Cancel</button></p>`;
@@ -1397,9 +1552,10 @@ async function saveAccountEdit(id) {
   const a = acctById(id); if (!a) return;
   const name = document.getElementById("edAcN").value.trim();
   const type = document.getElementById("edAcT").value;
+  const zk = document.getElementById("edAcZ").checked;
   if (!name) return toast("Enter a name");
-  a.name = name; a.type = type;
-  await persistUpdate("accounts", id, { name, type });
+  a.name = name; a.type = type; a.zakat_include = zk;
+  await persistUpdate("accounts", id, { name, type, zakat_include: zk });
   document.getElementById("acctDlg").close();
   toast("Account updated"); render();
 }

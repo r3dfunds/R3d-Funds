@@ -1354,7 +1354,8 @@ function viewAccounts() {
         <td>${esc(a.name)}</td>
         <td><span class="chip" style="background:${ACCT_TYPES[a.type].color}"></span><span class="tag">${ACCT_TYPES[a.type].label}</span></td>
         <td class="num">${lastD ? fmtRs(valueAt(a.id, lastD)) : "—"}</td>
-        <td style="text-align:right">
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn secondary" style="padding:3px 10px;font-size:12px" onclick="openAccountEdit('${a.id}')">Edit</button>
           <button class="btn secondary" style="padding:3px 10px;font-size:12px" onclick="toggleAccount('${a.id}')">${a.active === false ? "Reactivate" : "Archive"}</button>
           <button class="btn danger" style="padding:3px 10px;font-size:12px" onclick="delAccount('${a.id}')">Delete</button>
         </td></tr>`;
@@ -1373,6 +1374,34 @@ async function addAccount() {
 async function toggleAccount(id) {
   const a = acctById(id); a.active = a.active === false;
   await persistUpdate("accounts", id, { active: a.active }); render();
+}
+function openAccountEdit(id) {
+  const a = acctById(id); if (!a) return;
+  const typeOpts = Object.entries(ACCT_TYPES).map(([k, v]) =>
+    `<option value="${k}" ${a.type === k ? "selected" : ""}>${v.label}</option>`).join("");
+  const old = document.getElementById("acctDlg"); if (old) old.remove();
+  const dlg = document.createElement("dialog");
+  dlg.id = "acctDlg";
+  dlg.innerHTML = `<h2 style="font-size:15px;margin-bottom:4px">Edit account</h2>
+    <label>Name</label><input id="edAcN" value="${esc(a.name)}">
+    <label>Type</label><select id="edAcT">${typeOpts}</select>
+    <p class="muted" style="margin-top:8px">Changing type affects allocation and whether this account's Return (XIRR)
+    is shown — only Stocks/Fixed income/Business/Property/Other are treated as investments.</p>
+    <p style="margin-top:14px;display:flex;gap:8px">
+      <button class="btn" onclick="saveAccountEdit('${a.id}')">Save</button>
+      <button class="btn secondary" onclick="document.getElementById('acctDlg').close()">Cancel</button></p>`;
+  document.body.appendChild(dlg);
+  dlg.showModal();
+}
+async function saveAccountEdit(id) {
+  const a = acctById(id); if (!a) return;
+  const name = document.getElementById("edAcN").value.trim();
+  const type = document.getElementById("edAcT").value;
+  if (!name) return toast("Enter a name");
+  a.name = name; a.type = type;
+  await persistUpdate("accounts", id, { name, type });
+  document.getElementById("acctDlg").close();
+  toast("Account updated"); render();
 }
 async function delAccount(id) {
   const nTx = DB.txns.filter(t => t.account_id === id).length;

@@ -388,6 +388,10 @@ function xirr(flows) {
   const yrs = f => (new Date(f.date).getTime() - t0) / 3.15576e10;
   const hasNeg = flows.some(f => f.amount < 0), hasPos = flows.some(f => f.amount > 0);
   if (!hasNeg || !hasPos) return null;
+  /* all flows on the same date -> no time value to solve for; every rate satisfies the
+     equation equally (npv is flat), so the bisection below would converge to an
+     arbitrary point in its search range rather than a real answer. */
+  if (flows.every(f => yrs(f) === 0)) return null;
   const npv = r => flows.reduce((s, f) => s + f.amount / Math.pow(1 + r, yrs(f)), 0);
   let lo = -0.9999, hi = 10;
   let flo = npv(lo), fhi = npv(hi);
@@ -423,15 +427,37 @@ function accountXirr(accountId) {
 }
 
 /* total portfolio XIRR: external flows only */
+/* "Overall return" only makes sense for money that's actually invested — a bank/cash
+   account isn't earning anything, it's just where salary lands and bills get paid.
+   So this aggregates ONLY investment-type accounts (EARN_TYPES), and treats a transfer
+   as an external flow into/out of that pool exactly when it crosses the boundary
+   (bank -> TS is money invested; TS -> bank is money withdrawn). A transfer between two
+   investment accounts is internal to the pool and doesn't count. */
 function totalXirr() {
-  const end = latestSnapDate(); if (!end) return null;
-  const series = netWorthSeries(); if (!series.length) return null;
-  const startVal = series[0].value, startDate = series[0].date;
-  const flows = DB.txns
-    .filter(t => TXN_KINDS[t.kind].external && t.date <= end && t.date >= startDate)
-    .map(t => ({ date: t.date, amount: -TXN_KINDS[t.kind].sign * t.amount }));
-  flows.push({ date: startDate, amount: -startVal });
-  flows.push({ date: end, amount: series[series.length - 1].value });
+  const investAccts = DB.accounts.filter(a => EARN_TYPES[a.type]);
+  if (!investAccts.length) return null;
+  const investIds = new Set(investAccts.map(a => a.id));
+  const poolValue = d => investAccts.reduce((s, a) => {
+    const v = valueAt(a.id, d); return s + (v != null && v >= 0 ? v : 0);
+  }, 0);
+  const dates = snapDates().filter(d => investAccts.some(a => valueAt(a.id, d) != null));
+  if (dates.length < 1) return null;
+  const start = dates[0], end = dates[dates.length - 1];
+  const startVal = poolValue(start), endVal = poolValue(end);
+
+  const flows = [];
+  DB.txns.forEach(t => {
+    if (!investIds.has(t.account_id) || t.date < start || t.date > end) return;
+    if (t.kind === "income" || t.kind === "spend") {
+      flows.push({ date: t.date, amount: -TXN_KINDS[t.kind].sign * t.amount });
+    } else {
+      const partner = t.group_id ? DB.txns.find(x => x.group_id === t.group_id && x.id !== t.id) : null;
+      if (!partner || !investIds.has(partner.account_id))
+        flows.push({ date: t.date, amount: -TXN_KINDS[t.kind].sign * t.amount });
+    }
+  });
+  flows.push({ date: start, amount: -startVal });
+  flows.push({ date: end, amount: endVal });
   flows.sort((a, b) => a.date < b.date ? -1 : 1);
   return xirr(flows);
 }
@@ -594,7 +620,9 @@ function viewDashboard() {
     <div class="card">
       <h2>Overall return <span class="sub">XIRR, annualized</span></h2>
       <div class="hero-value ${txirr != null ? (txirr >= 0 ? "delta-up" : "delta-down") : ""}">${txirr != null ? fmtPct(txirr) : "—"}</div>
-      <div class="hero-sub muted">money-weighted, external flows adjusted</div>
+      <div class="hero-sub muted">${txirr != null ? "money-weighted, investment accounts only"
+        : DB.accounts.some(a => EARN_TYPES[a.type]) ? "needs 2+ snapshots on an investment account"
+        : "add a brokerage / fixed-income / other investment account to see this"}</div>
     </div>
   </div>`;
 

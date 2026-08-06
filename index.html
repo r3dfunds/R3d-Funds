@@ -517,8 +517,12 @@ function ledgerBalanceInfo(accountId, date) {
      already includes that day's entries, so treating it as opening would double-count them */
   const before = DB.snapshots.filter(s => s.account_id === accountId && s.date < txns[0].date)
     .sort((a, b) => a.date < b.date ? -1 : 1);
-  const hasOpening = before.length > 0;
-  const opening = hasOpening ? before[before.length - 1].value : 0;
+  /* a liability legitimately starts from zero (nothing owed before the first entry),
+     so a missing opening snapshot isn't the "unknown opening" problem it is for a bank */
+  const acct = acctById(accountId);
+  const startsAtZero = acct && acct.type === "liability";
+  const hasOpening = before.length > 0 || startsAtZero;
+  const opening = before.length ? before[before.length - 1].value : 0;
   return { value: txns.reduce((s, t) => s + TXN_KINDS[t.kind].sign * t.amount, opening),
            hasOpening, opening, firstDate: txns[0].date };
 }
@@ -874,7 +878,11 @@ function viewReview() {
 }
 
 /* ---------------- Zakat ---------------- */
-let zakatDate = "", zakatRate = "2.5", zakatExclude = {};
+let zakatDate = "", zakatRate = "2.5", zakatExclude = {}, zakatManual = "", zakatNote = "";
+/* net worth on a date = every account's snapshot value, liabilities included (they're negative) */
+function netWorthAt(d) {
+  return DB.accounts.reduce((s, a) => s + (valueAt(a.id, d) || 0), 0);
+}
 
 function zakatAccount() {
   return DB.accounts.find(a => a.type === "liability" && /zakat/i.test(a.name)) || null;
@@ -906,6 +914,7 @@ function viewZakat() {
       <td class="num ${inc ? "" : "muted"}">${v != null ? fmtRs(v) : "—"}</td></tr>`;
   }
   const due = Math.round(total * rate / 100);
+  const netWorthOnDate = netWorthAt(d);
 
   /* --- history from the ledger --- */
   let histRows = "", accrued = 0, paid = 0;
@@ -937,23 +946,45 @@ function viewZakat() {
       <div class="hero-sub muted">${accrued ? Math.round(paid / accrued * 100) + "% of assessed" : "—"}</div></div>
   </div>
 
-  <div class="card"><h2>Calculate zakat <span class="sub">on your wealth at a chosen date</span></h2>
+  <div class="card"><h2>Assess zakat <span class="sub">on your wealth at a chosen date</span></h2>
     <div class="row" style="align-items:flex-end">
       <div style="max-width:190px"><label>Valuation date (e.g. 1 Ramadan)</label>
-        <input type="date" value="${d}" onchange="zakatDate=this.value;render()"></div>
-      <div style="max-width:130px"><label>Rate %</label>
-        <input type="number" step="0.001" value="${esc(zakatRate)}" onchange="zakatRate=this.value;render()"></div>
+        <input type="date" value="${d}" onchange="zakatDate=this.value;zakatManual='';render()"></div>
+      <div style="max-width:130px"><label>Rate % (guide)</label>
+        <input type="number" step="0.001" value="${esc(zakatRate)}" onchange="zakatRate=this.value;zakatManual='';render()"></div>
       <div class="muted" style="font-size:12px">2.5% is the common lunar-year rate; some use 2.577% for a solar year.
         Tick the accounts your zakat applies to — follow your own scholar's guidance.</div>
     </div>
-    <table style="margin-top:12px"><thead><tr><th>Account</th><th>Type</th><th class="num">Value on ${d}</th></tr></thead>
+
+    <div class="grid3" style="margin-top:16px">
+      <div><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.07em">Net worth on ${d}</div>
+        <div style="font-size:22px;font-weight:750">${fmtRs(netWorthOnDate)}</div>
+        <div class="muted" style="font-size:11px">all accounts, liabilities deducted</div></div>
+      <div><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.07em">Zakatable wealth</div>
+        <div style="font-size:22px;font-weight:750">${fmtRs(total)}</div>
+        <div class="muted" style="font-size:11px">only the ticked accounts below</div></div>
+      <div><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.07em">Calculated @ ${rate}%</div>
+        <div style="font-size:22px;font-weight:750" class="delta-down">${fmtRs(due)}</div>
+        <div class="muted" style="font-size:11px">a guide — enter your own figure below</div></div>
+    </div>
+
+    <table style="margin-top:14px"><thead><tr><th>Account</th><th>Type</th><th class="num">Value on ${d}</th></tr></thead>
       <tbody>${rows}
       <tr style="font-weight:700"><td colspan="2">Zakatable wealth</td><td class="num">${fmtRs(total)}</td></tr>
-      <tr style="font-weight:700"><td colspan="2">Zakat @ ${rate}%</td><td class="num delta-down">${fmtRs(due)}</td></tr>
       </tbody></table>
-    <p style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="btn" onclick="recordZakat(${due},'${d}')" ${due > 0 ? "" : "disabled"}>Record Rs ${due.toLocaleString("en-PK")} as payable</button>
-      <span class="muted" style="font-size:12px">Creates a “Zakat payable” liability — your net worth drops by this amount.</span></p>
+
+    <div class="row" style="margin-top:16px;align-items:flex-end">
+      <div style="max-width:220px"><label>Amount to record (Rs)</label>
+        <input type="number" step="any" id="zkRecAmt" value="${zakatManual !== "" ? esc(zakatManual) : (due || "")}"
+          oninput="zakatManual=this.value" placeholder="enter final figure"></div>
+      <div><label>Note</label>
+        <input id="zkRecNote" value="${esc(zakatNote)}" oninput="zakatNote=this.value"
+          placeholder="e.g. Zakat 1447 AH — 1 Ramadan, calculated with Mufti sahib"></div>
+      <div style="flex:0 0 auto"><button class="btn" onclick="recordZakatManual('${d}')">Record as payable</button></div>
+    </div>
+    <p class="muted" style="margin-top:8px">Creates a “Zakat payable” liability dated ${d} — your net worth drops by
+      whatever figure you enter${zakatManual !== "" && Number(zakatManual) !== due ? `, currently <strong>${fmtRs(Number(zakatManual) || 0)}</strong> instead of the calculated ${fmtRs(due)}` : ""}.
+      ${due ? `<button class="btn secondary" style="padding:2px 10px;font-size:11px;margin-left:6px" onclick="zakatManual='';render()">Use calculated ${fmtRs(due)}</button>` : ""}</p>
     ${total === 0 ? `<p class="muted" style="margin-top:6px">No values on that date — record a snapshot for that date first.</p>` : ""}
   </div>
 
@@ -973,7 +1004,14 @@ function viewZakat() {
     <tbody>${histRows}</tbody></table></div>` : ""}`;
 }
 
-async function recordZakat(amount, date) {
+async function recordZakatManual(date) {
+  const amt = parseFloat((document.getElementById("zkRecAmt") || {}).value);
+  const note = ((document.getElementById("zkRecNote") || {}).value || "").trim();
+  if (!amt || amt <= 0) return toast("Enter the amount to record");
+  await recordZakat(amt, date, note);
+  zakatManual = ""; zakatNote = "";
+}
+async function recordZakat(amount, date, note) {
   if (!amount || amount <= 0) return toast("Nothing to record");
   if (!confirm(`Record ${fmtRs(amount)} as zakat payable on ${date}?\n\nYour net worth will drop by this amount.`)) return;
   let za = zakatAccount();
@@ -982,7 +1020,7 @@ async function recordZakat(amount, date) {
     DB.accounts.push(za); await persistInsert("accounts", za);
   }
   const row = { id: uid(), account_id: za.id, kind: "spend", date, amount,
-    note: `Zakat assessed on ${date}`, category: "Zakat assessed" };
+    note: note || `Zakat assessed on ${date}`, category: "Zakat assessed" };
   DB.txns.push(row); await persistInsert("transactions", row);
   /* a liability's balance is exactly known, so snapshot it straight away —
      that's what makes net worth reflect it */
